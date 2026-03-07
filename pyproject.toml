@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "apk-re-agents"
+version = "0.1.0"
+description = "APK reverse engineering subagent framework"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp",
+    "ollama",
+    "docker",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "fastapi",
+    "uvicorn[standard]",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "httpx",
+]
+
+[project.scripts]
+apk-re = "apk_re.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/apk_re"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
