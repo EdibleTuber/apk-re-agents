@@ -108,9 +108,14 @@ class Pipeline:
     ) -> dict:
         """Execute the appropriate tools for each agent type."""
         if agent_name == "unpacker":
-            jadx_result = await session.call_tool("run_jadx", arguments={"apk_path": job.apk_path})
-            apktool_result = await session.call_tool("run_apktool", arguments={"apk_path": job.apk_path})
-            return {"jadx": str(jadx_result), "apktool": str(apktool_result)}
+            # Translate coordinator path to agent mount path
+            agent_apk_path = job.apk_path.replace(str(self.shared_volume), "/work")
+            jadx_result = await session.call_tool("run_jadx", arguments={"apk_path": agent_apk_path})
+            apktool_result = await session.call_tool("run_apktool", arguments={"apk_path": agent_apk_path})
+            # Extract text from MCP CallToolResult
+            jadx_text = jadx_result.content[0].text if jadx_result.content else str(jadx_result)
+            apktool_text = apktool_result.content[0].text if apktool_result.content else str(apktool_result)
+            return {"jadx": jadx_text, "apktool": apktool_text}
         elif "read_file" in tool_names:
             return {"status": "completed", "agent": agent_name}
         return {}

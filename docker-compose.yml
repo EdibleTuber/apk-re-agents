@@ -6,10 +6,10 @@ services:
     ports:
       - "${COORDINATOR_PORT:-8000}:8000"
     volumes:
-      - shared_data:/data/apk_re/shared
+      - shared_data:/work
     environment:
       - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
-      - SHARED_VOLUME=/data/apk_re/shared
+      - SHARED_VOLUME=/work
 
   unpacker:
     build:
