@@ -1,4 +1,3 @@
-# docker-compose.yml
 services:
   coordinator:
     build:
@@ -11,14 +10,6 @@ services:
     environment:
       - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
       - SHARED_VOLUME=/data/apk_re/shared
-    depends_on:
-      - unpacker
-      - manifest_analyzer
-      - string_extractor
-      - network_mapper
-      - code_analyzer
-      - api_extractor
-      - report_synthesizer
 
   unpacker:
     build:
@@ -29,59 +20,62 @@ services:
     volumes:
       - shared_data:/work
 
-  manifest_analyzer:
-    build:
-      context: .
-      dockerfile: src/apk_re/agents/manifest_analyzer/Dockerfile
-    ports:
-      - "9001:8080"
-    volumes:
-      - shared_data:/work
+  # Agents below are not yet implemented.
+  # Uncomment as their Dockerfiles are created.
 
-  string_extractor:
-    build:
-      context: .
-      dockerfile: src/apk_re/agents/string_extractor/Dockerfile
-    ports:
-      - "9002:8080"
-    volumes:
-      - shared_data:/work
+  # manifest_analyzer:
+  #   build:
+  #     context: .
+  #     dockerfile: src/apk_re/agents/manifest_analyzer/Dockerfile
+  #   ports:
+  #     - "9001:8080"
+  #   volumes:
+  #     - shared_data:/work
 
-  network_mapper:
-    build:
-      context: .
-      dockerfile: src/apk_re/agents/network_mapper/Dockerfile
-    ports:
-      - "9003:8080"
-    volumes:
-      - shared_data:/work
+  # string_extractor:
+  #   build:
+  #     context: .
+  #     dockerfile: src/apk_re/agents/string_extractor/Dockerfile
+  #   ports:
+  #     - "9002:8080"
+  #   volumes:
+  #     - shared_data:/work
 
-  code_analyzer:
-    build:
-      context: .
-      dockerfile: src/apk_re/agents/code_analyzer/Dockerfile
-    ports:
-      - "9004:8080"
-    volumes:
-      - shared_data:/work
+  # network_mapper:
+  #   build:
+  #     context: .
+  #     dockerfile: src/apk_re/agents/network_mapper/Dockerfile
+  #   ports:
+  #     - "9003:8080"
+  #   volumes:
+  #     - shared_data:/work
 
-  api_extractor:
-    build:
-      context: .
-      dockerfile: src/apk_re/agents/api_extractor/Dockerfile
-    ports:
-      - "9005:8080"
-    volumes:
-      - shared_data:/work
+  # code_analyzer:
+  #   build:
+  #     context: .
+  #     dockerfile: src/apk_re/agents/code_analyzer/Dockerfile
+  #   ports:
+  #     - "9004:8080"
+  #   volumes:
+  #     - shared_data:/work
 
-  report_synthesizer:
-    build:
-      context: .
-      dockerfile: src/apk_re/agents/report_synthesizer/Dockerfile
-    ports:
-      - "9006:8080"
-    volumes:
-      - shared_data:/work
+  # api_extractor:
+  #   build:
+  #     context: .
+  #     dockerfile: src/apk_re/agents/api_extractor/Dockerfile
+  #   ports:
+  #     - "9005:8080"
+  #   volumes:
+  #     - shared_data:/work
+
+  # report_synthesizer:
+  #   build:
+  #     context: .
+  #     dockerfile: src/apk_re/agents/report_synthesizer/Dockerfile
+  #   ports:
+  #     - "9006:8080"
+  #   volumes:
+  #     - shared_data:/work
 
 volumes:
   shared_data:

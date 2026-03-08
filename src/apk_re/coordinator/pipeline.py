@@ -19,9 +19,22 @@ class PipelineStage:
 
 
 class Pipeline:
+    # Default agent names that map to docker-compose service names
+    AGENT_NAMES = [
+        "unpacker", "manifest_analyzer", "string_extractor",
+        "network_mapper", "code_analyzer", "api_extractor",
+        "report_synthesizer",
+    ]
+
     def __init__(self, shared_volume: str = "/data/apk_re/shared", agent_urls: dict[str, str] | None = None):
         self.shared_volume = Path(shared_volume)
-        self.agent_urls = agent_urls or {}
+        if agent_urls is not None:
+            self.agent_urls = agent_urls
+        else:
+            # Default: docker-compose networking (service_name:8080)
+            self.agent_urls = {
+                name: f"http://{name}:8080/sse" for name in self.AGENT_NAMES
+            }
         self.stages = self._default_stages()
 
     @staticmethod
@@ -69,22 +82,26 @@ class Pipeline:
         if not url:
             return
 
-        async with sse_client(url) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
+        findings_dir = self.shared_volume / "findings" / job.job_id
+        findings_dir.mkdir(parents=True, exist_ok=True)
+        findings_file = findings_dir / f"{agent_name}.json"
 
-                tools = await session.list_tools()
-                tool_names = [t.name for t in tools.tools]
+        try:
+            async with sse_client(url) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
 
-                result = await self._execute_agent_tools(session, agent_name, tool_names, job)
+                    tools = await session.list_tools()
+                    tool_names = [t.name for t in tools.tools]
 
-                # Write result to shared volume
-                findings_dir = self.shared_volume / "findings" / job.job_id
-                findings_dir.mkdir(parents=True, exist_ok=True)
-                findings_file = findings_dir / f"{agent_name}.json"
-                findings_file.write_text(
-                    json.dumps(result, indent=2) if isinstance(result, dict) else str(result)
-                )
+                    result = await self._execute_agent_tools(session, agent_name, tool_names, job)
+
+                    findings_file.write_text(
+                        json.dumps(result, indent=2) if isinstance(result, dict) else str(result)
+                    )
+        except Exception as e:
+            error_result = {"status": "error", "agent": agent_name, "error": str(e)}
+            findings_file.write_text(json.dumps(error_result, indent=2))
 
     async def _execute_agent_tools(
         self, session: ClientSession, agent_name: str, tool_names: list[str], job: JobRequest

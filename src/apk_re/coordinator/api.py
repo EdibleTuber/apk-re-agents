@@ -9,7 +9,7 @@ from apk_re.coordinator.pipeline import Pipeline
 from apk_re.schemas import JobRequest, JobStatus
 
 
-def create_app(shared_volume: str = "/data/apk_re/shared") -> FastAPI:
+def create_app(shared_volume: str = "/data/apk_re/shared", agent_urls: dict[str, str] | None = None) -> FastAPI:
     app = FastAPI(title="APK RE Coordinator")
     volume = Path(shared_volume)
 
@@ -27,7 +27,7 @@ def create_app(shared_volume: str = "/data/apk_re/shared") -> FastAPI:
         (job_dir / "status.json").write_text(status.model_dump_json(indent=2))
 
         # Run pipeline in background
-        pipeline = Pipeline(shared_volume=shared_volume)
+        pipeline = Pipeline(shared_volume=shared_volume, agent_urls=agent_urls)
         background_tasks.add_task(_run_pipeline, pipeline, request)
 
         return status.model_dump()

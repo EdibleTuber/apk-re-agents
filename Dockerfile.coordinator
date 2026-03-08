@@ -1,0 +1,15 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install dependencies first (better layer caching)
+COPY pyproject.toml .
+COPY src/apk_re/__init__.py ./src/apk_re/__init__.py
+RUN pip install --no-cache-dir .
+
+# Copy the full package
+COPY src/ ./src/
+RUN pip install --no-cache-dir .
+
+EXPOSE 8000
+CMD ["python", "-m", "apk_re.main"]
