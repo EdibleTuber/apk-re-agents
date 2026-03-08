@@ -3,8 +3,8 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 
-def create_agent_server(name: str) -> FastMCP:
-    server = FastMCP(name)
+def create_agent_server(name: str, host: str = "0.0.0.0", port: int = 8080) -> FastMCP:
+    server = FastMCP(name, host=host, port=port)
 
     @server.tool()
     def read_file(file_path: str, start_line: int = 0, max_lines: int = 200) -> str:

@@ -56,4 +56,4 @@ def create_unpacker_server():
 
 if __name__ == "__main__":
     server = create_unpacker_server()
-    server.run(transport="sse", host="0.0.0.0", port=8080)
+    server.run(transport="sse")
