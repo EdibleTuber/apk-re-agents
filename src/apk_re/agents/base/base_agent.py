@@ -1,7 +1,6 @@
 from pathlib import Path
 from typing import TypeVar
 
-import ollama
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel
 
@@ -24,6 +23,8 @@ def call_ollama(
         model: Model name to use.
         system_prompt: Optional system prompt.
     """
+    import ollama
+
     client = ollama.Client(host=ollama_host)
 
     messages = []

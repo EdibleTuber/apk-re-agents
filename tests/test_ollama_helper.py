@@ -12,7 +12,7 @@ class MockOutput(BaseModel):
     count: int
 
 
-@patch("apk_re.agents.base.base_agent.ollama.Client")
+@patch("ollama.Client")
 def test_call_ollama_returns_validated_model(mock_client_cls):
     mock_client = MagicMock()
     mock_client_cls.return_value = mock_client
@@ -37,7 +37,7 @@ def test_call_ollama_returns_validated_model(mock_client_cls):
     assert call_kwargs["format"] == MockOutput.model_json_schema()
 
 
-@patch("apk_re.agents.base.base_agent.ollama.Client")
+@patch("ollama.Client")
 def test_call_ollama_with_system_prompt(mock_client_cls):
     mock_client = MagicMock()
     mock_client_cls.return_value = mock_client
@@ -59,7 +59,7 @@ def test_call_ollama_with_system_prompt(mock_client_cls):
     assert messages[1]["role"] == "user"
 
 
-@patch("apk_re.agents.base.base_agent.ollama.Client")
+@patch("ollama.Client")
 def test_call_ollama_raises_on_invalid_json(mock_client_cls):
     mock_client = MagicMock()
     mock_client_cls.return_value = mock_client
