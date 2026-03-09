@@ -7,6 +7,8 @@ services:
       - "${COORDINATOR_PORT:-8000}:8000"
     volumes:
       - shared_data:/work
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
       - SHARED_VOLUME=/work
@@ -20,9 +22,6 @@ services:
     volumes:
       - shared_data:/work
 
-  # Agents below are not yet implemented.
-  # Uncomment as their Dockerfiles are created.
-
   manifest_analyzer:
     build:
       context: .
@@ -31,9 +30,14 @@ services:
       - "9001:8080"
     volumes:
       - shared_data:/work
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
       - MODEL_NAME=${SMALL_MODEL:-qwen2.5-coder:7b}
+
+  # Agents below are not yet implemented.
+  # Uncomment as their Dockerfiles are created.
 
   # string_extractor:
   #   build:
