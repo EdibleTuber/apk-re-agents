@@ -116,6 +116,15 @@ class Pipeline:
             jadx_text = jadx_result.content[0].text if jadx_result.content else str(jadx_result)
             apktool_text = apktool_result.content[0].text if apktool_result.content else str(apktool_result)
             return {"jadx": jadx_text, "apktool": apktool_text}
+        elif agent_name == "manifest_analyzer":
+            manifest_path = "/work/decompiled/apktool/AndroidManifest.xml"
+            result = await session.call_tool("analyze_manifest", arguments={"manifest_path": manifest_path})
+            result_text = result.content[0].text if result.content else str(result)
+            # Parse the JSON string returned by the agent
+            try:
+                return json.loads(result_text)
+            except json.JSONDecodeError:
+                return {"raw_output": result_text}
         elif "read_file" in tool_names:
             return {"status": "completed", "agent": agent_name}
         return {}

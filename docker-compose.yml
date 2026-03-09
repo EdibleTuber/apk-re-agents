@@ -23,14 +23,17 @@ services:
   # Agents below are not yet implemented.
   # Uncomment as their Dockerfiles are created.
 
-  # manifest_analyzer:
-  #   build:
-  #     context: .
-  #     dockerfile: src/apk_re/agents/manifest_analyzer/Dockerfile
-  #   ports:
-  #     - "9001:8080"
-  #   volumes:
-  #     - shared_data:/work
+  manifest_analyzer:
+    build:
+      context: .
+      dockerfile: src/apk_re/agents/manifest_analyzer/Dockerfile
+    ports:
+      - "9001:8080"
+    volumes:
+      - shared_data:/work
+    environment:
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
+      - MODEL_NAME=${SMALL_MODEL:-qwen2.5-coder:7b}
 
   # string_extractor:
   #   build:
