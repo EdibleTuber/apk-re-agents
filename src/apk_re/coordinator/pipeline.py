@@ -141,6 +141,16 @@ class Pipeline:
                 return json.loads(result_text)
             except json.JSONDecodeError:
                 return {"raw_output": result_text}
+        elif agent_name == "code_analyzer":
+            source_dir = "/work/decompiled/jadx"
+            if "triage_classes" in tool_names:
+                result = await session.call_tool("triage_classes", arguments={"source_dir": source_dir})
+                result_text = result.content[0].text if result.content else str(result)
+                try:
+                    return json.loads(result_text)
+                except json.JSONDecodeError:
+                    return {"raw_output": result_text}
+            return {"status": "completed", "agent": agent_name}
         elif "read_file" in tool_names:
             return {"status": "completed", "agent": agent_name}
         return {}

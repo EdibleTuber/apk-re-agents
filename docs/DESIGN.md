@@ -117,6 +117,14 @@ Each agent is a Docker container running an MCP server over SSE on port 8080 (ma
 - Activities, services, and receivers with exported status and intent filters
 - Uses a baked-in system prompt with the full Android dangerous permissions list
 
+**Network Mapper** (`agents/network_mapper/server.py`) -- LLM-powered (qwen2.5-coder:7b). Two-phase analysis:
+- Regex pre-filter scans `.java` files for network keywords (OkHttp, Retrofit, HttpURLConnection, WebSocket, SSL, CertificatePinner, etc.)
+- LLM analyzes relevant files to extract endpoints, protocols, cert pinning status, and security notes
+
+**Code Analyzer** (`agents/code_analyzer/server.py`) -- LLM-powered (qwen2.5-coder:7b). Exposes two tools:
+- `triage_classes` -- pre-filters Java files for security keywords, then uses LLM to score each class 0.0-1.0 by security relevance with summary and flags
+- `analyze_class` -- deep security analysis of a single Java file (for high-scoring classes from triage)
+
 **String Extractor** (`agents/string_extractor/server.py`) -- Pure regex, no LLM. Scans decompiled Java source for:
 - URLs (filtering Android/W3C/Apache false positives)
 - API keys with known prefixes (Google `AIza`, OpenAI `sk-`, AWS `AKIA`, GitHub `ghp_`, GitLab `glpat-`)
@@ -247,7 +255,7 @@ Containers that need to reach Ollama on the host use `extra_hosts: host.docker.i
 
 ## Current State
 
-**Implemented and tested (44 tests):**
+**Implemented and tested (54 tests):**
 - Coordinator (API + pipeline orchestrator + agent manager)
 - All data schemas
 - Configuration with env vars
@@ -255,12 +263,12 @@ Containers that need to reach Ollama on the host use `extra_hosts: host.docker.i
 - Unpacker agent (jadx + apktool, with Dockerfile)
 - Manifest Analyzer agent (LLM-powered, with Dockerfile)
 - String Extractor agent (regex-based, with Dockerfile)
-- Docker Compose with coordinator + 3 active agents
+- Network Mapper agent (LLM-powered, with Dockerfile)
+- Code Analyzer agent (LLM-powered, with Dockerfile)
+- Docker Compose with coordinator + 5 active agents
 - End-to-end pipeline tested with real APK on inference server
 
 **Not yet implemented:**
-- Network Mapper agent
-- Code Analyzer agent
 - API Extractor agent
 - Report Synthesizer agent
 - Error handling / retry logic in pipeline
