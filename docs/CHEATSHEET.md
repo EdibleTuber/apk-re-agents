@@ -9,6 +9,9 @@ docker compose up --build
 # Build and start in background
 docker compose up --build -d
 
+# Force full rebuild (no cache)
+docker compose build --no-cache && docker compose up
+
 # Stop everything
 docker compose down
 
@@ -50,6 +53,9 @@ docker compose exec coordinator ls /work/decompiled/apktool/
 # Read unpacker findings
 docker compose exec coordinator cat /work/findings/JOB_ID/unpacker.json
 
+# Read manifest analyzer findings
+docker compose exec coordinator cat /work/findings/JOB_ID/manifest_analyzer.json
+
 # Read job status
 docker compose exec coordinator cat /work/findings/JOB_ID/status.json
 
@@ -72,6 +78,7 @@ docker compose logs
 # View logs (single service, follow)
 docker compose logs -f unpacker
 docker compose logs -f coordinator
+docker compose logs -f manifest_analyzer
 
 # Shell into a container
 docker compose exec coordinator bash
@@ -80,6 +87,17 @@ docker compose exec unpacker bash
 # Check if agent MCP endpoint is responding (from inside coordinator)
 docker compose exec coordinator curl http://unpacker:8080/sse
 ```
+
+## Environment Setup
+
+Create a `.env` file in the project root (gitignored):
+
+```bash
+# Point to your Ollama instance
+echo "OLLAMA_HOST=http://192.168.1.14:11434" > .env
+```
+
+Docker Compose reads this automatically. If Ollama is on the same machine, `host.docker.internal:11434` works too.
 
 ## Run Tests (Local, No Docker)
 
