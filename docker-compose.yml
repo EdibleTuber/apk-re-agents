@@ -47,17 +47,22 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  network_mapper:
+    build:
+      context: .
+      dockerfile: src/apk_re/agents/network_mapper/Dockerfile
+    ports:
+      - "9003:8080"
+    volumes:
+      - shared_data:/work
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
+      - MODEL_NAME=${SMALL_MODEL:-qwen2.5-coder:7b}
+
   # Agents below are not yet implemented.
   # Uncomment as their Dockerfiles are created.
-
-  # network_mapper:
-  #   build:
-  #     context: .
-  #     dockerfile: src/apk_re/agents/network_mapper/Dockerfile
-  #   ports:
-  #     - "9003:8080"
-  #   volumes:
-  #     - shared_data:/work
 
   # code_analyzer:
   #   build:
