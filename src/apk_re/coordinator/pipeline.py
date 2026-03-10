@@ -92,7 +92,8 @@ class Pipeline:
             findings_file = findings_dir / f"{agent_name}.json"
 
         try:
-            async with sse_client(url) as (read, write):
+            # Per-file LLM calls can take 30-60min total; default 5min timeout is too short
+            async with sse_client(url, sse_read_timeout=60 * 60) as (read, write):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
 
