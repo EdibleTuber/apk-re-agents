@@ -7,6 +7,7 @@ from apk_re.agents.code_analyzer.server import (
     TRIAGE_PROMPT,
     ANALYSIS_PROMPT,
     SECURITY_KEYWORDS,
+    TRIAGE_BATCH_SIZE,
     TriageResult,
     _find_relevant_files,
 )
@@ -164,3 +165,94 @@ def test_library_path_filtering():
         assert "AppCrypto.java" in found_names
         # Library files should be excluded
         assert len(found) == 1, f"Expected only app file, got: {[str(f) for f in found]}"
+
+
+def test_triage_batch_size_is_five():
+    """TRIAGE_BATCH_SIZE should be 5."""
+    assert TRIAGE_BATCH_SIZE == 5
+
+
+@patch("apk_re.agents.code_analyzer.server.call_ollama")
+def test_triage_batches_multiple_calls(mock_call_ollama):
+    """Triage with more files than TRIAGE_BATCH_SIZE makes multiple LLM calls."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create 7 files (should produce 2 batches: 5 + 2)
+        class_names = []
+        for i in range(7):
+            pkg_dir = Path(tmpdir) / "com" / "example"
+            pkg_dir.mkdir(parents=True, exist_ok=True)
+            name = f"Security{i}.java"
+            (pkg_dir / name).write_text(
+                f'public class Security{i} {{\n'
+                f'    Cipher cipher; SecretKey key; password token;\n'
+                f'}}\n'
+            )
+            class_names.append(f"com.example.Security{i}")
+
+        def make_result(call_args):
+            # Return classes matching files in the prompt
+            classes = []
+            for cn in class_names:
+                short = cn.split(".")[-1]
+                if short in call_args[1]["prompt"]:
+                    classes.append(CodeAnalysisSummary(
+                        class_name=cn,
+                        relevance_score=0.7,
+                        summary=f"{short} handles crypto",
+                        flags=["crypto"],
+                    ))
+            return TriageResult(classes=classes)
+
+        mock_call_ollama.side_effect = lambda **kwargs: make_result((None, kwargs))
+
+        server = create_code_analyzer_server()
+        triage_fn = server._tool_manager._tools["triage_classes"].fn
+        result = triage_fn(source_dir=tmpdir)
+
+    # Should have been called twice (batch of 5 + batch of 2)
+    assert mock_call_ollama.call_count == 2
+    # All 7 classes should appear in result
+    import json
+    parsed = json.loads(result)
+    assert len(parsed["classes"]) == 7
+
+
+@patch("apk_re.agents.code_analyzer.server.call_ollama")
+def test_triage_batch_failure_continues(mock_call_ollama):
+    """If one batch fails, other batches still succeed."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create 7 files (2 batches)
+        for i in range(7):
+            pkg_dir = Path(tmpdir) / "com" / "example"
+            pkg_dir.mkdir(parents=True, exist_ok=True)
+            (pkg_dir / f"Crypto{i}.java").write_text(
+                f'public class Crypto{i} {{ Cipher cipher; SecretKey key; }}\n'
+            )
+
+        call_count = [0]
+
+        def side_effect(**kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise RuntimeError("LLM unavailable")
+            # Second batch succeeds
+            return TriageResult(classes=[
+                CodeAnalysisSummary(
+                    class_name="com.example.Crypto5",
+                    relevance_score=0.8,
+                    summary="Crypto class",
+                    flags=["crypto"],
+                ),
+            ])
+
+        mock_call_ollama.side_effect = side_effect
+
+        server = create_code_analyzer_server()
+        triage_fn = server._tool_manager._tools["triage_classes"].fn
+        result = triage_fn(source_dir=tmpdir)
+
+    import json
+    parsed = json.loads(result)
+    # First batch failed, second succeeded — should have results from second batch
+    assert len(parsed["classes"]) >= 1
+    assert mock_call_ollama.call_count == 2

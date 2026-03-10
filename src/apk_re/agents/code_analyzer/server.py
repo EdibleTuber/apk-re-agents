@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 from pathlib import Path
@@ -6,6 +7,8 @@ from pydantic import BaseModel, Field
 
 from apk_re.agents.base.base_agent import create_agent_server, call_ollama, is_library_path
 from apk_re.schemas import CodeAnalysisSummary
+
+logger = logging.getLogger(__name__)
 
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 MODEL_NAME = os.environ.get("MODEL_NAME", "qwen2.5-coder:7b")
@@ -52,6 +55,7 @@ SECURITY_KEYWORDS = re.compile(
 MAX_FILES = 30
 MAX_FILE_SIZE = 500 * 1024  # 500KB
 MAX_CHARS_PER_FILE = 8000
+TRIAGE_BATCH_SIZE = 5
 
 
 
@@ -104,32 +108,47 @@ def create_code_analyzer_server():
         if not relevant_files:
             return TriageResult(classes=[]).model_dump_json(indent=2)
 
-        # Build prompt with file contents
-        file_sections: list[str] = []
-        for f in relevant_files:
-            try:
-                content = f.read_text(errors="ignore")
-            except OSError:
+        # Process files in batches
+        all_classes: list[CodeAnalysisSummary] = []
+        for i in range(0, len(relevant_files), TRIAGE_BATCH_SIZE):
+            batch = relevant_files[i:i + TRIAGE_BATCH_SIZE]
+            file_sections: list[str] = []
+            for f in batch:
+                try:
+                    content = f.read_text(errors="ignore")
+                except OSError:
+                    continue
+                if len(content) > MAX_CHARS_PER_FILE:
+                    content = content[:MAX_CHARS_PER_FILE] + "\n... (truncated)"
+                try:
+                    file_sections.append(f"--- {f.relative_to(path)} ---\n{content}")
+                except ValueError:
+                    file_sections.append(f"--- {f.name} ---\n{content}")
+
+            if not file_sections:
                 continue
-            if len(content) > MAX_CHARS_PER_FILE:
-                content = content[:MAX_CHARS_PER_FILE] + "\n... (truncated)"
-            file_sections.append(
-                f"--- {f.relative_to(path)} ---\n{content}"
+
+            prompt = (
+                "Triage the following decompiled Java classes for security relevance. "
+                "Score each class and provide a summary and flags:\n\n"
+                + "\n\n".join(file_sections)
             )
 
-        prompt = (
-            "Triage the following decompiled Java classes for security relevance. "
-            "Score each class and provide a summary and flags:\n\n"
-            + "\n\n".join(file_sections)
-        )
-
-        result = call_ollama(
-            prompt=prompt,
-            output_schema=TriageResult,
-            ollama_host=OLLAMA_HOST,
-            model=MODEL_NAME,
-            system_prompt=TRIAGE_PROMPT,
-        )
+            try:
+                result = call_ollama(
+                    prompt=prompt,
+                    output_schema=TriageResult,
+                    ollama_host=OLLAMA_HOST,
+                    model=MODEL_NAME,
+                    system_prompt=TRIAGE_PROMPT,
+                )
+                all_classes.extend(result.classes)
+            except Exception:
+                logger.warning(
+                    "LLM triage batch failed (files %d-%d)",
+                    i, i + len(batch) - 1,
+                    exc_info=True,
+                )
 
         # Build set of class names from files actually sent for hallucination check
         sent_classes = set()
@@ -146,7 +165,7 @@ def create_code_analyzer_server():
 
         # Post-process: clamp scores, filter hallucinations, assign default flags
         validated = []
-        for cls in result.classes:
+        for cls in all_classes:
             # Remove hallucinated classes
             if cls.class_name not in sent_classes:
                 continue
