@@ -1,3 +1,4 @@
+import json
 import tempfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -212,7 +213,6 @@ def test_triage_batches_multiple_calls(mock_call_ollama):
     # Should have been called twice (batch of 5 + batch of 2)
     assert mock_call_ollama.call_count == 2
     # All 7 classes should appear in result
-    import json
     parsed = json.loads(result)
     assert len(parsed["classes"]) == 7
 
@@ -251,7 +251,6 @@ def test_triage_batch_failure_continues(mock_call_ollama):
         triage_fn = server._tool_manager._tools["triage_classes"].fn
         result = triage_fn(source_dir=tmpdir)
 
-    import json
     parsed = json.loads(result)
     # First batch failed, second succeeded — should have results from second batch
     assert len(parsed["classes"]) >= 1
