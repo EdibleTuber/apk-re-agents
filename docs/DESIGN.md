@@ -276,12 +276,12 @@ Containers that need to reach Ollama on the host use `extra_hosts: host.docker.i
 | Agent | Model | Rationale |
 |-------|-------|-----------|
 | Unpacker | none | Pure tooling (jadx + apktool) |
-| Manifest Analyzer | qwen2.5-coder:7b | Structured extraction, small context |
+| Manifest Analyzer | qwen2.5-coder:7b | Structured extraction, post-processing handles classification |
 | String Extractor | none | Pure regex + entropy |
-| Network Mapper | qwen2.5-coder:7b | Pattern recognition in code |
-| Code Analyzer | qwen2.5-coder:7b or 14b | May need more capacity for reasoning |
-| API Extractor | qwen2.5-coder:7b | Structured extraction from code |
-| Report Synthesizer | qwen2.5-coder:32b | Needs coherent long-form reasoning |
+| Network Mapper | qwen2.5-coder:7b | Pattern recognition, post-processing validates endpoints |
+| Code Analyzer | glm-4.7-flash (30B MoE) | Needs accurate scoring, flag assignment, no hallucinations — 7B failed |
+| API Extractor | glm-4.7-flash (30B MoE) | Needs faithful URL extraction without fabrication — 7B fabricated prefixes |
+| Report Synthesizer | glm-4.7-flash (30B MoE) | Needs coherent long-form reasoning and accurate synthesis |
 
 ## Current State
 

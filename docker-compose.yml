@@ -73,7 +73,7 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
-      - MODEL_NAME=${SMALL_MODEL:-qwen2.5-coder:7b}
+      - MODEL_NAME=${REASONING_MODEL:-glm-4.7-flash}
 
   api_extractor:
     build:
@@ -87,7 +87,7 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
-      - MODEL_NAME=${SMALL_MODEL:-qwen2.5-coder:7b}
+      - MODEL_NAME=${REASONING_MODEL:-glm-4.7-flash}
 
   report_synthesizer:
     build:
@@ -101,7 +101,7 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
-      - MODEL_NAME=${LARGE_MODEL:-qwen2.5-coder:32b-instruct-q4_K_M}
+      - MODEL_NAME=${REASONING_MODEL:-glm-4.7-flash}
 
 volumes:
   shared_data:

@@ -94,6 +94,10 @@ STYLEABLE_PATTERN = re.compile(r'^(get|set)STYLEABLE_')
 JAVA_CLASS_PATH = re.compile(r'^[a-z][a-z0-9]*(/[a-zA-Z][a-zA-Z0-9]*)+$')
 # Underscore resource/config identifiers: config_showMenuShortcutsWhenKeyboardPresent
 UNDERSCORE_IDENTIFIER = re.compile(r'^[a-z][a-z0-9]*_[a-zA-Z0-9_]+$')
+# Build config / Gradle module strings: src_kotlin_main_com_ergatta_device-build_cfg
+BUILD_CONFIG_PATTERN = re.compile(r'^(src_|third_party_|layout/)')
+# Data binding generated keys: viewModelStateRecommendationsDataOrNull...
+DATA_BINDING_PATTERN = re.compile(r'^(viewModel|wrapUpModel|itemIs|boundView)[A-Z]')
 
 
 def shannon_entropy(s: str) -> float:
@@ -146,6 +150,12 @@ def _is_false_positive_string(value: str) -> bool:
         return True
     # Skip underscore-separated resource/config identifiers
     if UNDERSCORE_IDENTIFIER.match(value):
+        return True
+    # Skip build config / Gradle module strings and layout paths
+    if BUILD_CONFIG_PATTERN.match(value):
+        return True
+    # Skip data binding generated keys
+    if DATA_BINDING_PATTERN.match(value):
         return True
     return False
 
