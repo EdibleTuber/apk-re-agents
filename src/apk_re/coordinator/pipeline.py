@@ -71,20 +71,25 @@ class Pipeline:
     async def _run_stage(self, stage: PipelineStage, job: JobRequest) -> None:
         if stage.parallel:
             await asyncio.gather(
-                *[self._call_agent(agent, job) for agent in stage.agents]
+                *[self._call_agent(agent, job, stage.name) for agent in stage.agents]
             )
         else:
             for agent in stage.agents:
-                await self._call_agent(agent, job)
+                await self._call_agent(agent, job, stage.name)
 
-    async def _call_agent(self, agent_name: str, job: JobRequest) -> None:
+    async def _call_agent(self, agent_name: str, job: JobRequest, stage_name: str = "") -> None:
         url = self.agent_urls.get(agent_name)
         if not url:
             return
 
         findings_dir = self.shared_volume / "findings" / job.job_id
         findings_dir.mkdir(parents=True, exist_ok=True)
-        findings_file = findings_dir / f"{agent_name}.json"
+
+        # Use stage-specific filename for code_deep to avoid overwriting triage
+        if stage_name == "code_deep" and agent_name == "code_analyzer":
+            findings_file = findings_dir / "code_analyzer_deep.json"
+        else:
+            findings_file = findings_dir / f"{agent_name}.json"
 
         try:
             async with sse_client(url) as (read, write):
@@ -94,7 +99,9 @@ class Pipeline:
                     tools = await session.list_tools()
                     tool_names = [t.name for t in tools.tools]
 
-                    result = await self._execute_agent_tools(session, agent_name, tool_names, job)
+                    result = await self._execute_agent_tools(
+                        session, agent_name, tool_names, job, stage_name=stage_name
+                    )
 
                     findings_file.write_text(
                         json.dumps(result, indent=2) if isinstance(result, dict) else str(result)
@@ -104,7 +111,8 @@ class Pipeline:
             findings_file.write_text(json.dumps(error_result, indent=2))
 
     async def _execute_agent_tools(
-        self, session: ClientSession, agent_name: str, tool_names: list[str], job: JobRequest
+        self, session: ClientSession, agent_name: str, tool_names: list[str],
+        job: JobRequest, stage_name: str = ""
     ) -> dict:
         """Execute the appropriate tools for each agent type."""
         if agent_name == "unpacker":
@@ -143,7 +151,28 @@ class Pipeline:
                 return {"raw_output": result_text}
         elif agent_name == "code_analyzer":
             source_dir = "/work/decompiled/jadx"
-            if "triage_classes" in tool_names:
+            if stage_name == "code_deep":
+                # Read triage results from previous stage
+                findings_dir = self.shared_volume / "findings" / job.job_id
+                triage_file = findings_dir / "code_analyzer.json"
+                if triage_file.exists():
+                    triage_data = json.loads(triage_file.read_text())
+                    classes = triage_data.get("classes", [])
+                    deep_results = []
+                    for cls in classes:
+                        if cls.get("relevance_score", 0) >= 0.6:
+                            class_path = f"{source_dir}/sources/{cls['class_name'].replace('.', '/')}.java"
+                            result = await session.call_tool(
+                                "analyze_class", arguments={"file_path": class_path}
+                            )
+                            result_text = result.content[0].text if result.content else str(result)
+                            try:
+                                deep_results.append(json.loads(result_text))
+                            except json.JSONDecodeError:
+                                deep_results.append({"raw_output": result_text})
+                    return {"deep_analysis": deep_results}
+                return {"deep_analysis": []}
+            elif "triage_classes" in tool_names:
                 result = await session.call_tool("triage_classes", arguments={"source_dir": source_dir})
                 result_text = result.content[0].text if result.content else str(result)
                 try:
