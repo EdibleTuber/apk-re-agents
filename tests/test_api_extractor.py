@@ -55,14 +55,13 @@ def test_retrofit_annotation_regex_matches():
 def test_retrofit_annotation_regex_no_false_positives():
     """The regex should not match non-annotation text."""
     negatives = [
-        'String method = "GET";',
-        '// @GET("/commented")',
-        'log.info("POST request sent")',
+        ('String method = "GET";', "bare keyword assignment"),
+        ('"@GET is a Retrofit annotation"', "English sentence mentioning annotation"),
+        ('GET("/path")', "missing @ symbol"),
     ]
-    for text in negatives:
-        # The regex may match inside strings, but that's acceptable since we
-        # pre-filter for files importing retrofit2
-        pass
+    for text, reason in negatives:
+        match = RETROFIT_ANNOTATION.search(text)
+        assert match is None, f"Should NOT match ({reason}): {text}"
 
 
 def test_extract_retrofit_endpoints_basic():
@@ -445,6 +444,7 @@ def test_extract_apis_empty_directory():
         result_json = extract_fn(source_dir=tmpdir)
         result = json.loads(result_json)
         assert result["endpoints"] == []
+        assert result["base_urls"] == []
 
 
 def test_extract_apis_nonexistent_directory():
@@ -453,6 +453,38 @@ def test_extract_apis_nonexistent_directory():
     extract_fn = server._tool_manager._tools["extract_apis"].fn
     result = extract_fn(source_dir="/nonexistent/path")
     assert "Error" in result
+
+
+@patch("apk_re.agents.api_extractor.server.call_ollama")
+def test_extract_apis_includes_base_urls(mock_call_ollama):
+    """Discovered base URLs should appear in the extract_apis output."""
+    mock_call_ollama.return_value = FileEndpointSchemas(endpoints=[])
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # A Retrofit file so we get endpoints
+        api_file = Path(tmpdir) / "UserApi.java"
+        api_file.write_text(
+            'import retrofit2.http.GET;\n'
+            'public interface UserApi {\n'
+            '    @GET("/users")\n'
+            '    Call<List<User>> list();\n'
+            '}\n'
+        )
+        # A config file with a base URL
+        config_file = Path(tmpdir) / "ApiConfig.java"
+        config_file.write_text(
+            'public class ApiConfig {\n'
+            '    private static final String BASE_URL = "https://api.ergatta.com/v2";\n'
+            '}\n'
+        )
+
+        server = create_api_extractor_server()
+        extract_fn = server._tool_manager._tools["extract_apis"].fn
+        result_json = extract_fn(source_dir=tmpdir)
+        result = json.loads(result_json)
+
+    assert "https://api.ergatta.com/v2" in result["base_urls"]
+    assert len(result["endpoints"]) == 1
 
 
 def test_build_source_class():

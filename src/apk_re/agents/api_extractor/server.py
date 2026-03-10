@@ -83,6 +83,7 @@ class FileEndpointSchemas(BaseModel):
 
 class ApiAnalysisResult(BaseModel):
     endpoints: list[EndpointFinding] = Field(default_factory=list)
+    base_urls: list[str] = Field(default_factory=list)
 
 
 # --- Phase 1: Regex extraction ---
@@ -349,6 +350,7 @@ def create_api_extractor_server():
 
         result = ApiAnalysisResult(
             endpoints=all_endpoints,
+            base_urls=base_urls,
         )
         return result.model_dump_json(indent=2)
 
