@@ -178,6 +178,11 @@ def create_network_mapper_server():
                 f"--- {rel} ---\n{content}"
             )
 
+            # Compute source_class from file path for consistency with regex findings
+            source_class = rel.replace("/", ".").replace(".java", "")
+            if source_class.startswith("sources."):
+                source_class = source_class[len("sources."):]
+
             try:
                 result = call_ollama(
                     prompt=prompt,
@@ -186,6 +191,9 @@ def create_network_mapper_server():
                     model=MODEL_NAME,
                     system_prompt=SYSTEM_PROMPT,
                 )
+                # Override source_class so it matches regex findings for dedup
+                for finding in result.findings:
+                    finding.source_class = source_class
                 all_findings.extend(result.findings)
             except Exception:
                 logger.warning("LLM call failed for file %s", rel, exc_info=True)
