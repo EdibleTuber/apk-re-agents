@@ -75,17 +75,22 @@ services:
       - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
       - MODEL_NAME=${SMALL_MODEL:-qwen2.5-coder:7b}
 
+  api_extractor:
+    build:
+      context: .
+      dockerfile: src/apk_re/agents/api_extractor/Dockerfile
+    ports:
+      - "9005:8080"
+    volumes:
+      - shared_data:/work
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
+      - MODEL_NAME=${SMALL_MODEL:-qwen2.5-coder:7b}
+
   # Agents below are not yet implemented.
   # Uncomment as their Dockerfiles are created.
-
-  # api_extractor:
-  #   build:
-  #     context: .
-  #     dockerfile: src/apk_re/agents/api_extractor/Dockerfile
-  #   ports:
-  #     - "9005:8080"
-  #   volumes:
-  #     - shared_data:/work
 
   # report_synthesizer:
   #   build:

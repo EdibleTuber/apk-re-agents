@@ -121,6 +121,10 @@ Each agent is a Docker container running an MCP server over SSE on port 8080 (ma
 - Regex pre-filter scans `.java` files for network keywords (OkHttp, Retrofit, HttpURLConnection, WebSocket, SSL, CertificatePinner, etc.)
 - LLM analyzes relevant files to extract endpoints, protocols, cert pinning status, and security notes
 
+**API Extractor** (`agents/api_extractor/server.py`) -- LLM-powered (qwen2.5-coder:7b). Two-phase analysis:
+- Regex pre-filter scans `.java` files for API keywords (Retrofit annotations, OkHttp, Volley, HttpURLConnection, URL patterns)
+- LLM extracts endpoint URLs, HTTP methods, request/response field schemas from relevant code
+
 **Code Analyzer** (`agents/code_analyzer/server.py`) -- LLM-powered (qwen2.5-coder:7b). Exposes two tools:
 - `triage_classes` -- pre-filters Java files for security keywords, then uses LLM to score each class 0.0-1.0 by security relevance with summary and flags
 - `analyze_class` -- deep security analysis of a single Java file (for high-scoring classes from triage)
@@ -255,7 +259,7 @@ Containers that need to reach Ollama on the host use `extra_hosts: host.docker.i
 
 ## Current State
 
-**Implemented and tested (54 tests):**
+**Implemented and tested (58 tests):**
 - Coordinator (API + pipeline orchestrator + agent manager)
 - All data schemas
 - Configuration with env vars
@@ -265,11 +269,11 @@ Containers that need to reach Ollama on the host use `extra_hosts: host.docker.i
 - String Extractor agent (regex-based, with Dockerfile)
 - Network Mapper agent (LLM-powered, with Dockerfile)
 - Code Analyzer agent (LLM-powered, with Dockerfile)
-- Docker Compose with coordinator + 5 active agents
+- API Extractor agent (LLM-powered, with Dockerfile)
+- Docker Compose with coordinator + 6 active agents
 - End-to-end pipeline tested with real APK on inference server
 
 **Not yet implemented:**
-- API Extractor agent
 - Report Synthesizer agent
 - Error handling / retry logic in pipeline
 - Authentication on the coordinator API

@@ -151,6 +151,14 @@ class Pipeline:
                 except json.JSONDecodeError:
                     return {"raw_output": result_text}
             return {"status": "completed", "agent": agent_name}
+        elif agent_name == "api_extractor":
+            source_dir = "/work/decompiled/jadx"
+            result = await session.call_tool("extract_apis", arguments={"source_dir": source_dir})
+            result_text = result.content[0].text if result.content else str(result)
+            try:
+                return json.loads(result_text)
+            except json.JSONDecodeError:
+                return {"raw_output": result_text}
         elif "read_file" in tool_names:
             return {"status": "completed", "agent": agent_name}
         return {}

@@ -59,6 +59,15 @@ docker compose exec coordinator cat /work/findings/JOB_ID/manifest_analyzer.json
 # Read string extractor findings
 docker compose exec coordinator cat /work/findings/JOB_ID/string_extractor.json
 
+# Read network mapper findings
+docker compose exec coordinator cat /work/findings/JOB_ID/network_mapper.json
+
+# Read code analyzer findings
+docker compose exec coordinator cat /work/findings/JOB_ID/code_analyzer.json
+
+# Read API extractor findings
+docker compose exec coordinator cat /work/findings/JOB_ID/api_extractor.json
+
 # Read job status
 docker compose exec coordinator cat /work/findings/JOB_ID/status.json
 
@@ -83,6 +92,9 @@ docker compose logs -f unpacker
 docker compose logs -f coordinator
 docker compose logs -f manifest_analyzer
 docker compose logs -f string_extractor
+docker compose logs -f network_mapper
+docker compose logs -f code_analyzer
+docker compose logs -f api_extractor
 
 # Shell into a container
 docker compose exec coordinator bash
