@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 from pathlib import Path
@@ -6,6 +7,8 @@ from pydantic import BaseModel, Field
 
 from apk_re.agents.base.base_agent import create_agent_server, call_ollama, is_library_path
 from apk_re.schemas import NetworkFinding
+
+logger = logging.getLogger(__name__)
 
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 MODEL_NAME = os.environ.get("MODEL_NAME", "qwen2.5-coder:7b")
@@ -41,6 +44,23 @@ NETWORK_KEYWORDS = re.compile(
     r'NetworkSecurityConfig|cleartext)',
     re.IGNORECASE
 )
+
+HARDCODED_URL = re.compile(r'"(https?://[^"]+)"')
+
+_FP_URL_PREFIXES = (
+    "http://schemas.android.com",
+    "http://www.w3.org",
+    "http://ns.adobe.com",
+    "http://xmlpull.org",
+    "https://www.googleapis.com/auth/",
+    "http://schemas.xmlsoap.org",
+    "http://www.apache.org",
+    "https://developer.android.com",
+)
+
+
+def _is_fp_url(url: str) -> bool:
+    return any(url.startswith(p) for p in _FP_URL_PREFIXES)
 
 MAX_FILES = 20
 MAX_FILE_SIZE = 500 * 1024  # 500KB
@@ -87,6 +107,35 @@ def _find_relevant_files(source_dir: Path) -> list[Path]:
     return [path for _, path in relevant[:MAX_FILES]]
 
 
+def _extract_url_literals(files: list[Path], source_dir: Path) -> list[NetworkFinding]:
+    """Extract hardcoded URLs from files without LLM."""
+    findings = []
+    for f in files:
+        try:
+            content = f.read_text(errors="ignore")
+        except OSError:
+            continue
+        try:
+            rel = str(f.relative_to(source_dir))
+        except ValueError:
+            rel = str(f)
+        source_class = rel.replace("/", ".").replace(".java", "")
+        if source_class.startswith("sources."):
+            source_class = source_class[len("sources."):]
+        for match in HARDCODED_URL.finditer(content):
+            url = match.group(1)
+            if _is_fp_url(url):
+                continue
+            findings.append(NetworkFinding(
+                endpoint=url,
+                protocol="https" if url.startswith("https") else "http",
+                source_class=source_class,
+                cert_pinning=False,
+                notes="Hardcoded URL literal",
+            ))
+    return findings
+
+
 def create_network_mapper_server():
     server = create_agent_server("network_mapper")
 
@@ -107,8 +156,10 @@ def create_network_mapper_server():
         if not relevant_files:
             return NetworkAnalysisResult(findings=[]).model_dump_json(indent=2)
 
-        # Build prompt with file contents
-        file_sections: list[str] = []
+        # Phase 1: Regex extraction of hardcoded URL literals
+        all_findings = _extract_url_literals(relevant_files, path)
+
+        # Phase 2: Per-file LLM calls
         for f in relevant_files:
             try:
                 content = f.read_text(errors="ignore")
@@ -116,39 +167,44 @@ def create_network_mapper_server():
                 continue
             if len(content) > MAX_CHARS_PER_FILE:
                 content = content[:MAX_CHARS_PER_FILE] + "\n... (truncated)"
-            file_sections.append(
-                f"--- {f.relative_to(path)} ---\n{content}"
+
+            try:
+                rel = str(f.relative_to(path))
+            except ValueError:
+                rel = str(f)
+
+            prompt = (
+                f"Analyze this single Java file for network behavior:\n\n"
+                f"--- {rel} ---\n{content}"
             )
 
-        prompt = (
-            "Analyze the following Java source files for network-related behavior "
-            "and extract all findings:\n\n"
-            + "\n\n".join(file_sections)
-        )
+            try:
+                result = call_ollama(
+                    prompt=prompt,
+                    output_schema=NetworkAnalysisResult,
+                    ollama_host=OLLAMA_HOST,
+                    model=MODEL_NAME,
+                    system_prompt=SYSTEM_PROMPT,
+                )
+                all_findings.extend(result.findings)
+            except Exception:
+                logger.warning("LLM call failed for file %s", rel, exc_info=True)
 
-        result = call_ollama(
-            prompt=prompt,
-            output_schema=NetworkAnalysisResult,
-            ollama_host=OLLAMA_HOST,
-            model=MODEL_NAME,
-            system_prompt=SYSTEM_PROMPT,
-        )
-
-        # Post-process: validate endpoint field and deduplicate
-        for finding in result.findings:
+        # Post-process: validate endpoint field
+        for finding in all_findings:
             if not ENDPOINT_PATTERN.match(finding.endpoint):
                 finding.endpoint = "unknown"
 
+        # Deduplicate by (endpoint, source_class)
         seen: set[tuple[str, str]] = set()
         deduped: list[NetworkFinding] = []
-        for finding in result.findings:
+        for finding in all_findings:
             key = (finding.endpoint, finding.source_class)
             if key not in seen:
                 seen.add(key)
                 deduped.append(finding)
-        result = NetworkAnalysisResult(findings=deduped)
 
-        return result.model_dump_json(indent=2)
+        return NetworkAnalysisResult(findings=deduped).model_dump_json(indent=2)
 
     return server
 
