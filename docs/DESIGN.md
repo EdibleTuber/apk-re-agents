@@ -64,13 +64,14 @@ Stage 2: parallel_analysis (concurrent)
   network_mapper     /
 
 Stage 3: code_triage (sequential)
-  code_analyzer -> scores every class by relevance
+  code_analyzer -> scores classes in batches of 5, writes to code_analyzer.json
 
 Stage 4: code_deep (sequential)
-  code_analyzer -> deep analysis on high-signal classes
+  code_analyzer -> reads triage results, deep-analyzes classes scoring >= 0.6
+                   writes to code_analyzer_deep.json
 
 Stage 5: api_extraction (sequential)
-  api_extractor -> pulls endpoint URLs, methods, schemas
+  api_extractor -> regex extracts Retrofit endpoints, LLM enriches per-file
 
 Stage 6: report (sequential)
   report_synthesizer -> combines all findings into final report
@@ -120,14 +121,17 @@ Each agent is a Docker container running an MCP server over SSE on port 8080 (ma
 - Uses a baked-in system prompt with the full Android dangerous permissions list
 - Post-processing overrides LLM permission classification with hardcoded maps for known NORMAL and DANGEROUS permissions (LLM unreliable for this)
 
-**Network Mapper** (`agents/network_mapper/server.py`) -- LLM-powered (qwen2.5-coder:7b). Three-phase analysis:
-- Regex pre-filter scans `.java` files for network keywords (OkHttp, Retrofit, HttpURLConnection, WebSocket, SSL, CertificatePinner, etc.)
-- LLM analyzes relevant files to extract endpoints, protocols, cert pinning status, and security notes
-- Post-processing validates endpoint fields (must be URL/hostname/IP, not class names) and deduplicates findings
+**Network Mapper** (`agents/network_mapper/server.py`) -- LLM-powered (qwen2.5-coder:7b). Two-phase analysis with per-file LLM calls:
+- Phase 1 (regex): Extracts hardcoded URL literals from `.java` files, filters false positives (schema URIs, docs)
+- Phase 2 (LLM): Pre-filters files for network keywords (OkHttp, Retrofit, HttpURLConnection, WebSocket, SSL, CertificatePinner, etc.), then sends each file individually to the LLM for endpoint/protocol/cert-pinning extraction
+- Post-processing validates endpoint fields (must be URL/hostname/IP, not class names), overrides LLM source_class with path-derived names, and deduplicates across both finding sources
 
-**API Extractor** (`agents/api_extractor/server.py`) -- LLM-powered (qwen2.5-coder:7b). Two-phase analysis:
-- Regex pre-filter scans `.java` files for API keywords (Retrofit annotations, OkHttp, Volley, HttpURLConnection, URL patterns)
-- LLM extracts endpoint URLs, HTTP methods, request/response field schemas from relevant code
+**API Extractor** (`agents/api_extractor/server.py`) -- Hybrid regex + LLM. Four-phase analysis:
+- Phase 1 (regex): Extracts Retrofit `@GET/@POST/@PUT/@DELETE/@PATCH` annotations directly from code — deterministic, catches all endpoints
+- Phase 2 (regex): Discovers base URL configurations (`baseUrl()`, `BASE_URL`, URL literals near Retrofit builders)
+- Phase 3 (LLM): Sends each Retrofit interface file individually to extract request/response field schemas
+- Phase 4 (LLM fallback): Files using OkHttp/Volley/HttpURLConnection directly (non-Retrofit) are processed one-at-a-time with a general extraction prompt
+- Post-processing filters non-API URLs (repo links, docs)
 
 **Report Synthesizer** (`agents/report_synthesizer/server.py`) -- LLM-powered (qwen2.5-coder:32b). The final pipeline stage:
 - Reads all previous agent findings from `/work/findings/{job_id}/`
@@ -135,9 +139,9 @@ Each agent is a Docker container running an MCP server over SSE on port 8080 (ma
 - Handles missing findings gracefully (some agents may have failed)
 - Produces a SecurityReport with executive summary, per-category analysis, and actionable recommendations
 
-**Code Analyzer** (`agents/code_analyzer/server.py`) -- LLM-powered (qwen2.5-coder:7b). Exposes two tools:
-- `triage_classes` -- pre-filters Java files for security keywords, then uses LLM to score each class by security relevance with summary and flags. Post-processing clamps scores to 0.0-1.0 (model outputs percentages), filters hallucinated class names against actual input, and assigns default flags when the LLM returns empty lists.
-- `analyze_class` -- deep security analysis of a single Java file (for high-scoring classes from triage)
+**Code Analyzer** (`agents/code_analyzer/server.py`) -- LLM-powered (glm-4.7-flash). Exposes two tools:
+- `triage_classes` -- pre-filters Java files for security keywords, then sends them to the LLM in batches of 5 (not all at once) for scoring. Post-processing clamps scores to 0.0-1.0 (model outputs percentages), filters hallucinated class names against actual input, and assigns default flags when the LLM returns empty lists.
+- `analyze_class` -- deep security analysis of a single Java file. Called by the pipeline's `code_deep` stage for classes scoring >= 0.6 in triage.
 
 **String Extractor** (`agents/string_extractor/server.py`) -- Pure regex, no LLM. Scans decompiled Java source for:
 - URLs (filtering Android/W3C/Apache false positives)
@@ -166,10 +170,11 @@ Coordinator                    Agent Container
 ```
 
 Key constraints:
-- One inference call per tool invocation (no multi-turn chatter)
+- Narrow prompts: each LLM call processes 1 file (network mapper, API extractor) or a small batch of 5 (code analyzer triage). No massive concatenated prompts.
 - Prompt templates are constants baked into the agent code
 - Structured output enforced via Pydantic JSON schema passed to Ollama
 - Agent reads its own files -- coordinator does not pass file content over MCP
+- Regex handles deterministic extraction (Retrofit annotations, URL literals); LLM handles ambiguous analysis (schemas, security classification)
 
 ### Post-Processing: "LLM Generates, Code Validates"
 
@@ -179,8 +184,8 @@ The 7B model is unreliable for certain deterministic constraints (numeric ranges
 |-------|----------------|
 | Manifest Analyzer | Override permission classification with hardcoded NORMAL/DANGEROUS maps |
 | Code Analyzer | Clamp scores >1.0 by dividing by 100; filter hallucinated classes against input files; assign default flags from source keywords |
-| Network Mapper | Validate endpoint field matches URL/hostname/IP regex; replace invalid with "unknown" |
-| API Extractor | Filter out non-API URL patterns (repo links, docs) |
+| Network Mapper | Validate endpoint field matches URL/hostname/IP regex; replace invalid with "unknown"; override LLM source_class with path-derived name for consistent dedup |
+| API Extractor | Regex extracts Retrofit annotations deterministically; LLM enriches per-file; filter non-API URLs (repo links, docs) |
 | String Extractor | Library path filtering, Kotlin mangled name detection, STYLEABLE/path/identifier filters |
 
 This pattern is cheaper and more reliable than upgrading to a larger model for these specific failure modes.
@@ -258,8 +263,9 @@ The coordinator is the MCP **client**. Each agent is an MCP **server**. The coor
       manifest_analyzer.json  # Manifest analysis
       string_extractor.json   # Secrets/strings found
       network_mapper.json     # Network behavior
-      code_analyzer.json      # Code analysis
-      api_extractor.json      # API endpoints
+      code_analyzer.json      # Code triage (scores + flags)
+      code_analyzer_deep.json # Deep analysis of high-scoring classes
+      api_extractor.json      # API endpoints (regex + LLM enriched)
       report_synthesizer.json # Final report
 ```
 
@@ -285,7 +291,7 @@ Containers that need to reach Ollama on the host use `extra_hosts: host.docker.i
 
 ## Current State
 
-**Implemented and tested (80 tests):**
+**Implemented and tested (113 tests):**
 - Coordinator (API + pipeline orchestrator + agent manager)
 - All data schemas
 - Configuration with env vars
@@ -300,6 +306,7 @@ Containers that need to reach Ollama on the host use `extra_hosts: host.docker.i
 - Docker Compose with coordinator + all 7 agents (complete pipeline)
 - End-to-end pipeline tested with real APK on inference server
 - Post-processing validation on all LLM-powered agents (Round 2 prompt tuning)
+- Round 3: Hybrid regex+LLM extraction for API extractor, per-file LLM calls for network mapper, batched triage for code analyzer, code_deep stage wired up
 
 **Not yet implemented:**
 - Error handling / retry logic in pipeline
