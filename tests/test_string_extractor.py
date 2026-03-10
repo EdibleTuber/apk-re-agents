@@ -3,6 +3,7 @@ import textwrap
 from pathlib import Path
 
 from apk_re.agents.string_extractor.server import (
+    _is_false_positive_string,
     create_string_extractor_server,
     extract_strings_from_file,
     shannon_entropy,
@@ -170,7 +171,7 @@ def test_extract_strings_tool_integration(tmp_path):
     java_file.write_text(textwrap.dedent("""\
         public class App {
             String api = "https://api.secret-service.com/v2/data";
-            String key = "AIzaSyAbcdefghijklmnopqrstuvwxyz012345";
+            String key = "AIzaSyA1234567890abcdefghijklmnopqrstuv";
         }
     """))
     server = create_string_extractor_server()
@@ -194,3 +195,69 @@ def test_skips_large_files(tmp_path):
     result = tool_fn(source_dir=str(tmp_path))
     parsed = json.loads(result)
     assert parsed == []
+
+
+# --- False positive: camelCase and PascalCase identifiers ---
+
+
+def test_filters_camelcase_identifiers():
+    """camelCase Java identifiers should be filtered as false positives."""
+    assert _is_false_positive_string("InterruptedException") is True
+    assert _is_false_positive_string("checkNotNullParameter") is True
+    assert _is_false_positive_string("onOTAMCBFirmwareUpdateStatus") is True
+
+
+def test_filters_pascalcase_java_suffixes():
+    """PascalCase names ending with Java suffixes should be filtered."""
+    assert _is_false_positive_string("HiltViewModelFactory") is True
+    assert _is_false_positive_string("FragmentComponentBuilderEntryPoint") is True
+    assert _is_false_positive_string("AbstractQueuedSynchronizer") is True
+
+
+def test_filters_jvm_type_descriptors():
+    """JVM internal type descriptors (L-prefixed paths) should be filtered."""
+    assert _is_false_positive_string("Ljava/security/MessageDigest") is True
+    assert _is_false_positive_string("Landroid/os/Bundle") is True
+    assert _is_false_positive_string("Lkotlin/jvm/internal/Intrinsics") is True
+
+
+def test_real_base64_with_digits_detected(tmp_path):
+    """Real base64 strings containing digits should still be detected."""
+    java_file = tmp_path / "Secret.java"
+    # A high-entropy base64 string with digits
+    b64 = "dGhpcyBpcyBhIHRlc3Qgb2YgYmFzZTY0IGVuY29kaW5n"
+    java_file.write_text(f'public class Secret {{ String s = "{b64}"; }}\n')
+    findings = extract_strings_from_file(java_file)
+    blobs = [f for f in findings if f.category == "encoded_blob"]
+    assert len(blobs) >= 1
+
+
+def test_deduplication(tmp_path):
+    """Same value appearing in multiple files should only be reported once."""
+    src = tmp_path / "src"
+    src.mkdir()
+    for name in ("A.java", "B.java"):
+        f = src / name
+        f.write_text('public class X { String u = "https://api.example.com/v1/dup"; }\n')
+    server = create_string_extractor_server()
+    tool_fn = server._tool_manager._tools["extract_strings"].fn
+    result = tool_fn(source_dir=str(src))
+    parsed = json.loads(result)
+    dup_values = [f["value"] for f in parsed if f["value"] == "https://api.example.com/v1/dup"]
+    assert len(dup_values) == 1
+
+
+def test_pure_letter_strings_not_detected_as_base64(tmp_path):
+    """Pure-letter strings (no digits, no +/=) should not be flagged as encoded_blob."""
+    java_file = tmp_path / "Ident.java"
+    # These are pure-letter strings that previously matched as base64
+    java_file.write_text(textwrap.dedent("""\
+        public class Ident {
+            String a = "InterruptedException";
+            String b = "checkNotNullParameter";
+            String c = "AbstractQueuedSynchronizer";
+        }
+    """))
+    findings = extract_strings_from_file(java_file)
+    blobs = [f for f in findings if f.category == "encoded_blob"]
+    assert len(blobs) == 0

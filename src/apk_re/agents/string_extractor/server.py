@@ -65,6 +65,24 @@ COMMON_JAVA_IDENTIFIERS = {
     "getApplicationContext",
 }
 
+# Java/Android class name suffixes that indicate identifiers, not secrets
+JAVA_SUFFIXES = (
+    "Exception", "Error", "Handler", "Listener", "Callback", "Factory",
+    "Provider", "Manager", "Service", "Module", "Component", "Activity",
+    "Fragment", "Adapter", "Builder", "Helper", "Wrapper", "Delegate",
+    "Interceptor", "Parameter", "Validator", "Processor", "Marker",
+    "EntryPoint", "ViewModel", "Repository", "Receiver", "Connection",
+    "Serializer",
+)
+
+# JVM internal type descriptor prefixes
+JVM_DESCRIPTOR_PREFIXES = (
+    "Ljava/", "Lokio/", "Landroid/", "Lkotlin/", "Lcom/",
+)
+
+CAMEL_CASE_RE = re.compile(r'^[a-z][a-zA-Z0-9]*$')
+PASCAL_CASE_RE = re.compile(r'^[A-Z][a-zA-Z]*[a-z][a-zA-Z]*$')
+
 
 def shannon_entropy(s: str) -> float:
     """Calculate Shannon entropy of a string."""
@@ -89,6 +107,19 @@ def _is_false_positive_string(value: str) -> bool:
         return True
     # Skip strings that are all uppercase with underscores (likely constant names)
     if re.match(r'^[A-Z][A-Z0-9_]*$', value):
+        return True
+    # Skip camelCase identifiers (starts lowercase, has uppercase letters, pure letters)
+    # Only filter if string is pure letters — real base64 contains digits
+    if CAMEL_CASE_RE.match(value) and any(c.isupper() for c in value) and value.isalpha():
+        return True
+    # Skip PascalCase identifiers (starts uppercase, mixed case, no separators)
+    if PASCAL_CASE_RE.match(value):
+        return True
+    # Skip strings ending with common Java class suffixes
+    if any(value.endswith(suffix) for suffix in JAVA_SUFFIXES):
+        return True
+    # Skip JVM internal type descriptors (e.g. Ljava/lang/String;)
+    if any(value.startswith(prefix) for prefix in JVM_DESCRIPTOR_PREFIXES):
         return True
     return False
 
@@ -158,8 +189,12 @@ def extract_strings_from_file(
             val = m.group(1)
             if _is_false_positive_string(val):
                 continue
+            # Require at least one digit or base64 special char (+/=)
+            # Pure-letter strings are identifiers, not encoded data
+            if not re.search(r'[0-9+/=]', val):
+                continue
             ent = shannon_entropy(val)
-            if ent < 3.5:
+            if ent < 4.5:
                 continue
             findings.append(
                 StringFinding(
@@ -214,12 +249,17 @@ def create_string_extractor_server():
             return json.dumps({"error": f"Directory not found: {root}"})
 
         all_findings: list[StringFinding] = []
+        seen_values: set[str] = set()
 
         for java_file in root.rglob("*.java"):
             if java_file.stat().st_size > MAX_FILE_SIZE:
                 continue
             file_findings = extract_strings_from_file(java_file)
-            all_findings.extend(file_findings)
+            for finding in file_findings:
+                if finding.value in seen_values:
+                    continue
+                seen_values.add(finding.value)
+                all_findings.append(finding)
             if len(all_findings) >= MAX_FINDINGS:
                 all_findings = all_findings[:MAX_FINDINGS]
                 break
