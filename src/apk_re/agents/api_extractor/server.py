@@ -4,7 +4,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from apk_re.agents.base.base_agent import create_agent_server, call_ollama
+from apk_re.agents.base.base_agent import create_agent_server, call_ollama, is_library_path
 from apk_re.schemas import EndpointFinding
 
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
@@ -38,14 +38,6 @@ IMPORTANT: Only extract URLs that appear VERBATIM in the code. Do NOT fabricate,
 
 Be precise with URLs. Include path parameters like {id} as-is."""
 
-LIBRARY_PATH_SEGMENTS = (
-    "/io/netty/", "/okio/", "/okhttp3/", "/retrofit2/",
-    "/dagger/", "/hilt_aggregated_deps/", "/androidx/",
-    "/com/google/", "/com/android/", "/kotlin/", "/kotlinx/",
-    "/org/apache/", "/io/reactivex/", "/com/squareup/",
-    "/com/facebook/", "/com/crashlytics/", "/net/jodah/",
-    "/com/braze/", "/com/airbnb/", "/exoplayer2/",
-)
 
 NON_API_URL_PATTERNS = re.compile(
     r'(?:github\.com|gitlab\.com|bitbucket\.org|sources\.gett\.com'
@@ -75,7 +67,7 @@ def _find_relevant_files(source_dir: Path) -> list[Path]:
     relevant: list[tuple[int, Path]] = []
     for java_file in source_dir.rglob("*.java"):
         file_str = str(java_file)
-        if any(seg in file_str for seg in LIBRARY_PATH_SEGMENTS):
+        if is_library_path(file_str):
             continue
         if java_file.stat().st_size > MAX_FILE_SIZE:
             continue

@@ -4,7 +4,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from apk_re.agents.base.base_agent import create_agent_server, call_ollama
+from apk_re.agents.base.base_agent import create_agent_server, call_ollama, is_library_path
 from apk_re.schemas import NetworkFinding
 
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
@@ -46,13 +46,18 @@ MAX_FILES = 20
 MAX_FILE_SIZE = 500 * 1024  # 500KB
 MAX_CHARS_PER_FILE = 8000
 
-LIBRARY_PATH_SEGMENTS = (
-    "/io/netty/", "/okio/", "/okhttp3/", "/retrofit2/",
-    "/dagger/", "/hilt_aggregated_deps/", "/androidx/",
-    "/com/google/", "/com/android/", "/kotlin/", "/kotlinx/",
-    "/org/apache/", "/io/reactivex/", "/com/squareup/",
-    "/com/facebook/", "/com/crashlytics/", "/net/jodah/",
-    "/com/braze/", "/com/airbnb/", "/exoplayer2/",
+
+
+ENDPOINT_PATTERN = re.compile(
+    r'^('
+    r'https?://|wss?://|tcp://|udp://'  # URL schemes
+    r'|\*\.'                              # wildcard hostnames
+    r'|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}'  # IP addresses
+    r'|[a-z0-9][-a-z0-9]*\.[a-z]{2,}'   # hostnames (foo.example.com)
+    r'|unknown'                           # explicit unknown
+    r'|localhost'                          # localhost
+    r')',
+    re.IGNORECASE
 )
 
 
@@ -65,7 +70,7 @@ def _find_relevant_files(source_dir: Path) -> list[Path]:
     relevant: list[tuple[int, Path]] = []
     for java_file in source_dir.rglob("*.java"):
         file_str = str(java_file)
-        if any(seg in file_str for seg in LIBRARY_PATH_SEGMENTS):
+        if is_library_path(file_str):
             continue
         if java_file.stat().st_size > MAX_FILE_SIZE:
             continue
@@ -129,7 +134,11 @@ def create_network_mapper_server():
             system_prompt=SYSTEM_PROMPT,
         )
 
-        # Deduplicate findings by (endpoint, source_class)
+        # Post-process: validate endpoint field and deduplicate
+        for finding in result.findings:
+            if not ENDPOINT_PATTERN.match(finding.endpoint):
+                finding.endpoint = "unknown"
+
         seen: set[tuple[str, str]] = set()
         deduped: list[NetworkFinding] = []
         for finding in result.findings:

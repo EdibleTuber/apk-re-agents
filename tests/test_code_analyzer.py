@@ -7,10 +7,10 @@ from apk_re.agents.code_analyzer.server import (
     TRIAGE_PROMPT,
     ANALYSIS_PROMPT,
     SECURITY_KEYWORDS,
-    LIBRARY_PATH_SEGMENTS,
     TriageResult,
     _find_relevant_files,
 )
+from apk_re.agents.base.base_agent import LIBRARY_PATH_SEGMENTS
 from apk_re.schemas import CodeAnalysisSummary
 
 
@@ -46,27 +46,29 @@ def test_analysis_prompt_exists():
 
 @patch("apk_re.agents.code_analyzer.server.call_ollama")
 def test_triage_classes_calls_ollama(mock_call_ollama):
-    mock_result = TriageResult(
-        classes=[
-            CodeAnalysisSummary(
-                class_name="com.example.CryptoHelper",
-                relevance_score=0.9,
-                summary="Implements AES encryption with hardcoded key",
-                flags=["crypto"],
-            )
-        ]
-    )
-    mock_call_ollama.return_value = mock_result
-
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Create a sample java file with security keywords
-        java_file = Path(tmpdir) / "CryptoHelper.java"
+        # Create a sample java file with security keywords in a package path
+        pkg_dir = Path(tmpdir) / "com" / "example"
+        pkg_dir.mkdir(parents=True)
+        java_file = pkg_dir / "CryptoHelper.java"
         java_file.write_text(
             'public class CryptoHelper {\n'
             '    private static final String SECRET_KEY = "hardcoded";\n'
             '    Cipher cipher = Cipher.getInstance("AES");\n'
             '}\n'
         )
+
+        mock_result = TriageResult(
+            classes=[
+                CodeAnalysisSummary(
+                    class_name="com.example.CryptoHelper",
+                    relevance_score=0.9,
+                    summary="Implements AES encryption with hardcoded key",
+                    flags=["crypto"],
+                )
+            ]
+        )
+        mock_call_ollama.return_value = mock_result
 
         server = create_code_analyzer_server()
         triage_fn = server._tool_manager._tools["triage_classes"].fn

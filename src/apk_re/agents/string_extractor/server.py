@@ -5,7 +5,7 @@ import re
 from collections import Counter
 from pathlib import Path
 
-from apk_re.agents.base.base_agent import create_agent_server
+from apk_re.agents.base.base_agent import create_agent_server, is_library_path
 from apk_re.schemas import StringFinding
 
 MAX_FINDINGS = 200
@@ -83,6 +83,18 @@ JVM_DESCRIPTOR_PREFIXES = (
 CAMEL_CASE_RE = re.compile(r'^[a-z][a-zA-Z0-9]*$')
 PASCAL_CASE_RE = re.compile(r'^[A-Z][a-zA-Z]*[a-z][a-zA-Z]*$')
 
+# Kotlin name-mangled method patterns
+# e.g., m5293surfaceColorAtElevationcq6XJ1M
+KOTLIN_MANGLED_PREFIX = re.compile(r'^m\d{3,}[a-zA-Z]')
+# e.g., createGuidelineFromAbsoluteRight-0680j_4
+KOTLIN_HASH_SUFFIX = re.compile(r'^[a-zA-Z][a-zA-Z0-9]*-[A-Za-z0-9_]{4,10}$')
+# Android resource styleable getters: getSTYLEABLE_VECTOR_DRAWABLE_*
+STYLEABLE_PATTERN = re.compile(r'^(get|set)STYLEABLE_')
+# Java class path strings: org/slf4j/impl/StaticLoggerBinder
+JAVA_CLASS_PATH = re.compile(r'^[a-z][a-z0-9]*(/[a-zA-Z][a-zA-Z0-9]*)+$')
+# Underscore resource/config identifiers: config_showMenuShortcutsWhenKeyboardPresent
+UNDERSCORE_IDENTIFIER = re.compile(r'^[a-z][a-z0-9]*_[a-zA-Z0-9_]+$')
+
 
 def shannon_entropy(s: str) -> float:
     """Calculate Shannon entropy of a string."""
@@ -120,6 +132,20 @@ def _is_false_positive_string(value: str) -> bool:
         return True
     # Skip JVM internal type descriptors (e.g. Ljava/lang/String;)
     if any(value.startswith(prefix) for prefix in JVM_DESCRIPTOR_PREFIXES):
+        return True
+    # Skip Kotlin name-mangled methods (m<digits><name> or name-<hash>)
+    if KOTLIN_MANGLED_PREFIX.match(value):
+        return True
+    if KOTLIN_HASH_SUFFIX.match(value):
+        return True
+    # Skip Android STYLEABLE getter/setter names
+    if STYLEABLE_PATTERN.match(value):
+        return True
+    # Skip Java class path strings (e.g., org/slf4j/impl/StaticLoggerBinder)
+    if JAVA_CLASS_PATH.match(value):
+        return True
+    # Skip underscore-separated resource/config identifiers
+    if UNDERSCORE_IDENTIFIER.match(value):
         return True
     return False
 
@@ -252,6 +278,8 @@ def create_string_extractor_server():
         seen_values: set[str] = set()
 
         for java_file in root.rglob("*.java"):
+            if is_library_path(str(java_file)):
+                continue
             if java_file.stat().st_size > MAX_FILE_SIZE:
                 continue
             file_findings = extract_strings_from_file(java_file)

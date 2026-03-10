@@ -7,6 +7,56 @@ from apk_re.schemas import ManifestFindings
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 MODEL_NAME = os.environ.get("MODEL_NAME", "qwen2.5-coder:7b")
 
+KNOWN_NORMAL_PERMISSIONS = {
+    "android.permission.INTERNET",
+    "android.permission.ACCESS_NETWORK_STATE",
+    "android.permission.ACCESS_WIFI_STATE",
+    "android.permission.VIBRATE",
+    "android.permission.WAKE_LOCK",
+    "android.permission.RECEIVE_BOOT_COMPLETED",
+    "android.permission.FOREGROUND_SERVICE",
+    "android.permission.BILLING",
+    "android.permission.REQUEST_INSTALL_PACKAGES",
+    "android.permission.NFC",
+    "android.permission.BLUETOOTH",
+    "android.permission.CHANGE_NETWORK_STATE",
+    "android.permission.CHANGE_WIFI_STATE",
+    "android.permission.SET_ALARM",
+    "com.google.android.c2dm.permission.RECEIVE",
+    "com.google.android.c2dm.permission.SEND",
+}
+
+KNOWN_DANGEROUS_PERMISSIONS = {
+    "android.permission.READ_CONTACTS",
+    "android.permission.WRITE_CONTACTS",
+    "android.permission.ACCESS_FINE_LOCATION",
+    "android.permission.ACCESS_COARSE_LOCATION",
+    "android.permission.ACCESS_BACKGROUND_LOCATION",
+    "android.permission.CAMERA",
+    "android.permission.READ_SMS",
+    "android.permission.SEND_SMS",
+    "android.permission.RECEIVE_SMS",
+    "android.permission.CALL_PHONE",
+    "android.permission.READ_CALL_LOG",
+    "android.permission.WRITE_CALL_LOG",
+    "android.permission.RECORD_AUDIO",
+    "android.permission.READ_EXTERNAL_STORAGE",
+    "android.permission.WRITE_EXTERNAL_STORAGE",
+    "android.permission.READ_PHONE_STATE",
+    "android.permission.READ_PHONE_NUMBERS",
+    "android.permission.READ_CALENDAR",
+    "android.permission.WRITE_CALENDAR",
+    "android.permission.BODY_SENSORS",
+    "android.permission.ACTIVITY_RECOGNITION",
+    "android.permission.BLUETOOTH_CONNECT",
+    "android.permission.BLUETOOTH_SCAN",
+    "android.permission.NEARBY_WIFI_DEVICES",
+    "android.permission.POST_NOTIFICATIONS",
+    "android.permission.READ_MEDIA_IMAGES",
+    "android.permission.READ_MEDIA_VIDEO",
+    "android.permission.READ_MEDIA_AUDIO",
+}
+
 SYSTEM_PROMPT = """You are an Android security analyst specializing in manifest analysis.
 Given an AndroidManifest.xml file, extract all security-relevant information into structured data.
 
@@ -52,6 +102,13 @@ def create_manifest_analyzer_server():
             model=MODEL_NAME,
             system_prompt=SYSTEM_PROMPT,
         )
+
+        # Post-process: override permission classification for known permissions
+        for perm in findings.permissions:
+            if perm.name in KNOWN_NORMAL_PERMISSIONS:
+                perm.dangerous = False
+            elif perm.name in KNOWN_DANGEROUS_PERMISSIONS:
+                perm.dangerous = True
 
         return findings.model_dump_json(indent=2)
 

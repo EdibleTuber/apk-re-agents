@@ -6,10 +6,10 @@ from apk_re.agents.network_mapper.server import (
     create_network_mapper_server,
     SYSTEM_PROMPT,
     NETWORK_KEYWORDS,
-    LIBRARY_PATH_SEGMENTS,
     NetworkAnalysisResult,
     _find_relevant_files,
 )
+from apk_re.agents.base.base_agent import LIBRARY_PATH_SEGMENTS
 from apk_re.schemas import NetworkFinding
 
 

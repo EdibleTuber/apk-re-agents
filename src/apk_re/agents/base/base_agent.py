@@ -6,6 +6,22 @@ from pydantic import BaseModel
 
 T = TypeVar("T", bound=BaseModel)
 
+LIBRARY_PATH_SEGMENTS = (
+    "/io/netty/", "/okio/", "/okhttp3/", "/retrofit2/",
+    "/dagger/", "/hilt_aggregated_deps/", "/androidx/",
+    "/com/google/", "/com/android/", "/kotlin/", "/kotlinx/",
+    "/org/apache/", "/io/reactivex/", "/com/squareup/",
+    "/com/facebook/", "/com/crashlytics/", "/net/jodah/",
+    "/com/braze/", "/com/airbnb/", "/exoplayer2/",
+    "/io/grpc/", "/org/slf4j/", "/org/codehaus/",
+    "/com/fasterxml/", "/org/bouncycastle/",
+)
+
+
+def is_library_path(path: str) -> bool:
+    """Check if a file path belongs to a third-party library."""
+    return any(seg in path for seg in LIBRARY_PATH_SEGMENTS)
+
 
 def call_ollama(
     prompt: str,

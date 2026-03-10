@@ -104,9 +104,11 @@ The pipeline connects to each agent via MCP over SSE (`mcp.client.sse.sse_client
 
 Each agent is a Docker container running an MCP server over SSE on port 8080 (mapped to host ports 9000-9006).
 
-**Base agent** (`agents/base/base_agent.py`) -- Provides two building blocks:
+**Base agent** (`agents/base/base_agent.py`) -- Provides shared building blocks:
 - `create_agent_server(name)` -- factory that returns a FastMCP instance with a `read_file` tool pre-registered
 - `call_ollama(prompt, output_schema, ...)` -- calls Ollama with a Pydantic JSON schema for structured output, returns a validated model instance
+- `LIBRARY_PATH_SEGMENTS` -- canonical list of third-party library path prefixes to exclude from analysis (io/netty, okio, okhttp3, retrofit2, dagger, androidx, com/google, kotlin, io/grpc, org/slf4j, etc.)
+- `is_library_path(path)` -- helper to check if a file path belongs to a library
 
 **Unpacker** (`agents/unpacker/server.py`) -- Pure tooling, no LLM. Extends base agent with:
 - `run_jadx` -- decompiles APK to Java source (with deobfuscation)
@@ -116,10 +118,12 @@ Each agent is a Docker container running an MCP server over SSE on port 8080 (ma
 - Permissions with dangerous/normal classification
 - Activities, services, and receivers with exported status and intent filters
 - Uses a baked-in system prompt with the full Android dangerous permissions list
+- Post-processing overrides LLM permission classification with hardcoded maps for known NORMAL and DANGEROUS permissions (LLM unreliable for this)
 
-**Network Mapper** (`agents/network_mapper/server.py`) -- LLM-powered (qwen2.5-coder:7b). Two-phase analysis:
+**Network Mapper** (`agents/network_mapper/server.py`) -- LLM-powered (qwen2.5-coder:7b). Three-phase analysis:
 - Regex pre-filter scans `.java` files for network keywords (OkHttp, Retrofit, HttpURLConnection, WebSocket, SSL, CertificatePinner, etc.)
 - LLM analyzes relevant files to extract endpoints, protocols, cert pinning status, and security notes
+- Post-processing validates endpoint fields (must be URL/hostname/IP, not class names) and deduplicates findings
 
 **API Extractor** (`agents/api_extractor/server.py`) -- LLM-powered (qwen2.5-coder:7b). Two-phase analysis:
 - Regex pre-filter scans `.java` files for API keywords (Retrofit annotations, OkHttp, Volley, HttpURLConnection, URL patterns)
@@ -132,17 +136,19 @@ Each agent is a Docker container running an MCP server over SSE on port 8080 (ma
 - Produces a SecurityReport with executive summary, per-category analysis, and actionable recommendations
 
 **Code Analyzer** (`agents/code_analyzer/server.py`) -- LLM-powered (qwen2.5-coder:7b). Exposes two tools:
-- `triage_classes` -- pre-filters Java files for security keywords, then uses LLM to score each class 0.0-1.0 by security relevance with summary and flags
+- `triage_classes` -- pre-filters Java files for security keywords, then uses LLM to score each class by security relevance with summary and flags. Post-processing clamps scores to 0.0-1.0 (model outputs percentages), filters hallucinated class names against actual input, and assigns default flags when the LLM returns empty lists.
 - `analyze_class` -- deep security analysis of a single Java file (for high-scoring classes from triage)
 
 **String Extractor** (`agents/string_extractor/server.py`) -- Pure regex, no LLM. Scans decompiled Java source for:
 - URLs (filtering Android/W3C/Apache false positives)
 - API keys with known prefixes (Google `AIza`, OpenAI `sk-`, AWS `AKIA`, GitHub `ghp_`, GitLab `glpat-`)
 - JWT tokens (`eyJ...eyJ...` pattern)
-- Base64 encoded blobs (20+ chars, entropy > 3.5)
+- Base64 encoded blobs (20+ chars, entropy > 4.5, must contain digits or +/=)
 - Generic high-entropy string literals (entropy > 4.0)
 - Calculates Shannon entropy for each finding to help identify secrets
-- Caps at 200 findings, skips files over 1MB
+- Skips library code via shared `is_library_path()` filter
+- Filters false positives: camelCase/PascalCase identifiers, Java class suffixes, JVM type descriptors, Kotlin name-mangled methods (m<digits> prefix, -<hash> suffix), STYLEABLE getter names, Java class path strings, underscore resource identifiers
+- Deduplicates by value, caps at 200 findings, skips files over 1MB
 
 ### Ollama Integration
 
@@ -164,6 +170,20 @@ Key constraints:
 - Prompt templates are constants baked into the agent code
 - Structured output enforced via Pydantic JSON schema passed to Ollama
 - Agent reads its own files -- coordinator does not pass file content over MCP
+
+### Post-Processing: "LLM Generates, Code Validates"
+
+The 7B model is unreliable for certain deterministic constraints (numeric ranges, known fact lookups, field format enforcement). Rather than iterating on prompts indefinitely, each agent applies code-level post-processing to enforce what the model can't:
+
+| Agent | Post-processing |
+|-------|----------------|
+| Manifest Analyzer | Override permission classification with hardcoded NORMAL/DANGEROUS maps |
+| Code Analyzer | Clamp scores >1.0 by dividing by 100; filter hallucinated classes against input files; assign default flags from source keywords |
+| Network Mapper | Validate endpoint field matches URL/hostname/IP regex; replace invalid with "unknown" |
+| API Extractor | Filter out non-API URL patterns (repo links, docs) |
+| String Extractor | Library path filtering, Kotlin mangled name detection, STYLEABLE/path/identifier filters |
+
+This pattern is cheaper and more reliable than upgrading to a larger model for these specific failure modes.
 
 ### Configuration (`src/apk_re/config.py`)
 
@@ -265,7 +285,7 @@ Containers that need to reach Ollama on the host use `extra_hosts: host.docker.i
 
 ## Current State
 
-**Implemented and tested (64 tests):**
+**Implemented and tested (80 tests):**
 - Coordinator (API + pipeline orchestrator + agent manager)
 - All data schemas
 - Configuration with env vars
@@ -279,6 +299,7 @@ Containers that need to reach Ollama on the host use `extra_hosts: host.docker.i
 - Report Synthesizer agent (LLM-powered, with Dockerfile)
 - Docker Compose with coordinator + all 7 agents (complete pipeline)
 - End-to-end pipeline tested with real APK on inference server
+- Post-processing validation on all LLM-powered agents (Round 2 prompt tuning)
 
 **Not yet implemented:**
 - Error handling / retry logic in pipeline

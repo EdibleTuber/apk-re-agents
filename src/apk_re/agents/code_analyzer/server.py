@@ -4,7 +4,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from apk_re.agents.base.base_agent import create_agent_server, call_ollama
+from apk_re.agents.base.base_agent import create_agent_server, call_ollama, is_library_path
 from apk_re.schemas import CodeAnalysisSummary
 
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
@@ -53,14 +53,6 @@ MAX_FILES = 30
 MAX_FILE_SIZE = 500 * 1024  # 500KB
 MAX_CHARS_PER_FILE = 8000
 
-LIBRARY_PATH_SEGMENTS = (
-    "/io/netty/", "/okio/", "/okhttp3/", "/retrofit2/",
-    "/dagger/", "/hilt_aggregated_deps/", "/androidx/",
-    "/com/google/", "/com/android/", "/kotlin/", "/kotlinx/",
-    "/org/apache/", "/io/reactivex/", "/com/squareup/",
-    "/com/facebook/", "/com/crashlytics/", "/net/jodah/",
-    "/com/braze/", "/com/airbnb/", "/exoplayer2/",
-)
 
 
 class TriageResult(BaseModel):
@@ -72,7 +64,7 @@ def _find_relevant_files(source_dir: Path) -> list[Path]:
     relevant: list[tuple[int, Path]] = []
     for java_file in source_dir.rglob("*.java"):
         file_str = str(java_file)
-        if any(seg in file_str for seg in LIBRARY_PATH_SEGMENTS):
+        if is_library_path(file_str):
             continue
         if java_file.stat().st_size > MAX_FILE_SIZE:
             continue
@@ -139,6 +131,52 @@ def create_code_analyzer_server():
             system_prompt=TRIAGE_PROMPT,
         )
 
+        # Build set of class names from files actually sent for hallucination check
+        sent_classes = set()
+        for f in relevant_files:
+            try:
+                rel = str(f.relative_to(path))
+            except ValueError:
+                continue
+            # sources/com/ifit/glassos/Foo.java -> com.ifit.glassos.Foo
+            class_name = rel.replace("/", ".").replace(".java", "")
+            if class_name.startswith("sources."):
+                class_name = class_name[len("sources."):]
+            sent_classes.add(class_name)
+
+        # Post-process: clamp scores, filter hallucinations, assign default flags
+        validated = []
+        for cls in result.classes:
+            # Remove hallucinated classes
+            if cls.class_name not in sent_classes:
+                continue
+            # Clamp scores to 0.0-1.0 (model often outputs percentages)
+            if cls.relevance_score > 1.0:
+                cls.relevance_score = min(cls.relevance_score / 100.0, 1.0)
+            # Assign default flags if empty
+            if not cls.flags:
+                # Look up the file content to infer flags
+                matching_files = [f for f in relevant_files if cls.class_name.replace(".", "/") in str(f)]
+                if matching_files:
+                    try:
+                        content = matching_files[0].read_text(errors="ignore")
+                    except OSError:
+                        content = ""
+                    if any(kw in content for kw in ("Http", "Socket", "Url", "Retrofit", "OkHttp", "Volley")):
+                        cls.flags = ["network"]
+                    elif any(kw in content for kw in ("Cipher", "KeyStore", "MessageDigest", "SecretKey")):
+                        cls.flags = ["crypto"]
+                    elif any(kw in content for kw in ("SharedPreferences", "SQLite", "ContentProvider", "Room")):
+                        cls.flags = ["storage"]
+                    elif any(kw in content for kw in ("login", "token", "password", "auth", "credential", "session")):
+                        cls.flags = ["auth"]
+                    else:
+                        cls.flags = ["other"]
+                else:
+                    cls.flags = ["other"]
+            validated.append(cls)
+
+        result = TriageResult(classes=validated)
         return result.model_dump_json(indent=2)
 
     @server.tool()

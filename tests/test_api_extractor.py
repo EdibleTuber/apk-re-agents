@@ -7,10 +7,10 @@ from apk_re.agents.api_extractor.server import (
     SYSTEM_PROMPT,
     API_KEYWORDS,
     ApiAnalysisResult,
-    LIBRARY_PATH_SEGMENTS,
     NON_API_URL_PATTERNS,
     _find_relevant_files,
 )
+from apk_re.agents.base.base_agent import LIBRARY_PATH_SEGMENTS
 from apk_re.schemas import EndpointFinding
 
 
