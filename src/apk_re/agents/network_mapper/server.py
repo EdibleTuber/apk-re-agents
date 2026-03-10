@@ -13,6 +13,12 @@ MODEL_NAME = os.environ.get("MODEL_NAME", "qwen2.5-coder:7b")
 SYSTEM_PROMPT = """You are an Android security analyst specializing in network behavior analysis.
 Given Java source code from a decompiled Android app, identify all network-related behavior:
 
+IMPORTANT field definitions:
+- "endpoint": Must be a URL, hostname, IP address, or URL pattern. Examples: "https://api.example.com", "*.example.com", "10.0.0.1:8080". If the code handles network traffic but you cannot identify a specific endpoint, use "unknown".
+- "source_class": The Java class where the network behavior was found. This is where the CLASS NAME goes.
+
+Do NOT put class names or method names in the "endpoint" field.
+
 For each network endpoint or connection found:
 - Extract the endpoint URL or pattern
 - Identify the protocol (http, https, wss, ws, tcp, udp)
@@ -40,6 +46,15 @@ MAX_FILES = 20
 MAX_FILE_SIZE = 500 * 1024  # 500KB
 MAX_CHARS_PER_FILE = 8000
 
+LIBRARY_PATH_SEGMENTS = (
+    "/io/netty/", "/okio/", "/okhttp3/", "/retrofit2/",
+    "/dagger/", "/hilt_aggregated_deps/", "/androidx/",
+    "/com/google/", "/com/android/", "/kotlin/", "/kotlinx/",
+    "/org/apache/", "/io/reactivex/", "/com/squareup/",
+    "/com/facebook/", "/com/crashlytics/", "/net/jodah/",
+    "/com/braze/", "/com/airbnb/", "/exoplayer2/",
+)
+
 
 class NetworkAnalysisResult(BaseModel):
     findings: list[NetworkFinding] = Field(default_factory=list)
@@ -49,6 +64,9 @@ def _find_relevant_files(source_dir: Path) -> list[Path]:
     """Pre-filter .java files for network-related keywords."""
     relevant: list[tuple[int, Path]] = []
     for java_file in source_dir.rglob("*.java"):
+        file_str = str(java_file)
+        if any(seg in file_str for seg in LIBRARY_PATH_SEGMENTS):
+            continue
         if java_file.stat().st_size > MAX_FILE_SIZE:
             continue
         try:
@@ -110,6 +128,16 @@ def create_network_mapper_server():
             model=MODEL_NAME,
             system_prompt=SYSTEM_PROMPT,
         )
+
+        # Deduplicate findings by (endpoint, source_class)
+        seen: set[tuple[str, str]] = set()
+        deduped: list[NetworkFinding] = []
+        for finding in result.findings:
+            key = (finding.endpoint, finding.source_class)
+            if key not in seen:
+                seen.add(key)
+                deduped.append(finding)
+        result = NetworkAnalysisResult(findings=deduped)
 
         return result.model_dump_json(indent=2)
 
