@@ -159,6 +159,13 @@ class Pipeline:
                 return json.loads(result_text)
             except json.JSONDecodeError:
                 return {"raw_output": result_text}
+        elif agent_name == "report_synthesizer":
+            result = await session.call_tool("synthesize_report", arguments={"job_id": job.job_id})
+            result_text = result.content[0].text if result.content else str(result)
+            try:
+                return json.loads(result_text)
+            except json.JSONDecodeError:
+                return {"raw_output": result_text}
         elif "read_file" in tool_names:
             return {"status": "completed", "agent": agent_name}
         return {}

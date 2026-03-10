@@ -125,6 +125,12 @@ Each agent is a Docker container running an MCP server over SSE on port 8080 (ma
 - Regex pre-filter scans `.java` files for API keywords (Retrofit annotations, OkHttp, Volley, HttpURLConnection, URL patterns)
 - LLM extracts endpoint URLs, HTTP methods, request/response field schemas from relevant code
 
+**Report Synthesizer** (`agents/report_synthesizer/server.py`) -- LLM-powered (qwen2.5-coder:32b). The final pipeline stage:
+- Reads all previous agent findings from `/work/findings/{job_id}/`
+- Synthesizes a coherent security report with risk level, key findings, and recommendations
+- Handles missing findings gracefully (some agents may have failed)
+- Produces a SecurityReport with executive summary, per-category analysis, and actionable recommendations
+
 **Code Analyzer** (`agents/code_analyzer/server.py`) -- LLM-powered (qwen2.5-coder:7b). Exposes two tools:
 - `triage_classes` -- pre-filters Java files for security keywords, then uses LLM to score each class 0.0-1.0 by security relevance with summary and flags
 - `analyze_class` -- deep security analysis of a single Java file (for high-scoring classes from triage)
@@ -259,7 +265,7 @@ Containers that need to reach Ollama on the host use `extra_hosts: host.docker.i
 
 ## Current State
 
-**Implemented and tested (58 tests):**
+**Implemented and tested (64 tests):**
 - Coordinator (API + pipeline orchestrator + agent manager)
 - All data schemas
 - Configuration with env vars
@@ -270,11 +276,11 @@ Containers that need to reach Ollama on the host use `extra_hosts: host.docker.i
 - Network Mapper agent (LLM-powered, with Dockerfile)
 - Code Analyzer agent (LLM-powered, with Dockerfile)
 - API Extractor agent (LLM-powered, with Dockerfile)
-- Docker Compose with coordinator + 6 active agents
+- Report Synthesizer agent (LLM-powered, with Dockerfile)
+- Docker Compose with coordinator + all 7 agents (complete pipeline)
 - End-to-end pipeline tested with real APK on inference server
 
 **Not yet implemented:**
-- Report Synthesizer agent
 - Error handling / retry logic in pipeline
 - Authentication on the coordinator API
 
