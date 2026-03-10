@@ -494,6 +494,20 @@ def test_build_source_class():
     assert _build_source_class(file_path, source_dir) == "com.myapp.api.UserService"
 
 
+def test_build_source_class_strips_sources_prefix():
+    """JADX puts files under sources/ — that prefix should be stripped."""
+    source_dir = Path("/work/decompiled/jadx")
+    file_path = Path("/work/decompiled/jadx/sources/com/myapp/api/UserService.java")
+    assert _build_source_class(file_path, source_dir) == "com.myapp.api.UserService"
+
+
+def test_build_source_class_fallback_on_unrelated_path():
+    """If file_path is not relative to source_dir, return the stem."""
+    source_dir = Path("/work/decompiled/jadx")
+    file_path = Path("/other/place/MyFile.java")
+    assert _build_source_class(file_path, source_dir) == "MyFile"
+
+
 @patch("apk_re.agents.api_extractor.server.call_ollama")
 def test_enrichment_failure_graceful(mock_call_ollama):
     """If LLM enrichment fails, endpoints should still be returned (without schemas)."""

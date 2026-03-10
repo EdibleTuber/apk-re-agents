@@ -1,6 +1,9 @@
+import logging
 import os
 import re
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from pydantic import BaseModel, Field
 
@@ -176,7 +179,8 @@ def _enrich_file_with_llm(
             system_prompt=ENRICHMENT_PROMPT,
         )
         return result
-    except Exception:
+    except Exception as exc:
+        logger.warning("LLM enrichment failed for %s: %s", file_path, exc)
         return FileEndpointSchemas()
 
 
@@ -189,7 +193,11 @@ def _build_source_class(file_path: Path, source_dir: Path) -> str:
     except ValueError:
         return file_path.stem
     # Convert path like com/myapp/api/UserService.java -> com.myapp.api.UserService
-    return str(rel).replace("/", ".").replace(".java", "")
+    source_class = str(rel).replace("/", ".").replace(".java", "")
+    # Strip JADX "sources/" directory prefix if present
+    if source_class.startswith("sources."):
+        source_class = source_class[len("sources."):]
+    return source_class
 
 
 # --- Fallback: non-Retrofit file discovery ---
@@ -231,7 +239,10 @@ def _process_non_retrofit_file(
     if len(content) > MAX_CHARS_PER_FILE:
         content = content[:MAX_CHARS_PER_FILE] + "\n... (truncated)"
 
-    rel_path = file_path.relative_to(source_dir)
+    try:
+        rel_path = file_path.relative_to(source_dir)
+    except ValueError:
+        rel_path = file_path.name
     prompt = (
         f"Analyze this single Java source file for API endpoint definitions "
         f"and extract all endpoints:\n\n"
@@ -251,7 +262,8 @@ def _process_non_retrofit_file(
             ep for ep in result.endpoints
             if not NON_API_URL_PATTERNS.search(ep.url)
         ]
-    except Exception:
+    except Exception as exc:
+        logger.warning("LLM fallback analysis failed for %s: %s", file_path, exc)
         return []
 
 
