@@ -7,6 +7,7 @@ from apk_re.agents.code_analyzer.server import (
     TRIAGE_PROMPT,
     ANALYSIS_PROMPT,
     SECURITY_KEYWORDS,
+    LIBRARY_PATH_SEGMENTS,
     TriageResult,
     _find_relevant_files,
 )
@@ -25,6 +26,16 @@ def test_triage_prompt_exists():
     assert "security" in TRIAGE_PROMPT.lower()
     assert "relevance_score" in TRIAGE_PROMPT
     assert len(TRIAGE_PROMPT) > 50
+
+
+def test_triage_prompt_scoring_scale():
+    assert "0.0 and 1.0" in TRIAGE_PROMPT
+    assert "NOT" in TRIAGE_PROMPT and "percentages" in TRIAGE_PROMPT
+
+
+def test_triage_prompt_flag_examples():
+    for flag in ("network", "crypto", "storage", "auth", "webview", "ipc"):
+        assert f'"{flag}"' in TRIAGE_PROMPT
 
 
 def test_analysis_prompt_exists():
@@ -126,3 +137,28 @@ def test_keyword_prefilter_identifies_relevant_files():
         assert "CryptoUtil.java" in found_names
         assert "StringUtils.java" not in found_names
         assert "config.xml" not in found_names
+
+
+def test_library_path_filtering():
+    """Files in known library packages should be skipped even if they contain keywords."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create files in library paths (should be skipped)
+        for lib_path in ("com/google/crypto", "androidx/security", "exoplayer2/upstream"):
+            lib_dir = Path(tmpdir) / lib_path
+            lib_dir.mkdir(parents=True)
+            (lib_dir / "LibClass.java").write_text(
+                'public class LibClass { Cipher cipher; SecretKey key; }\n'
+            )
+
+        # Create a file in an app-specific path (should be kept)
+        app_dir = Path(tmpdir) / "com" / "ifit" / "security"
+        app_dir.mkdir(parents=True)
+        (app_dir / "AppCrypto.java").write_text(
+            'public class AppCrypto { Cipher cipher; SecretKey key; }\n'
+        )
+
+        found = _find_relevant_files(Path(tmpdir))
+        found_names = [f.name for f in found]
+        assert "AppCrypto.java" in found_names
+        # Library files should be excluded
+        assert len(found) == 1, f"Expected only app file, got: {[str(f) for f in found]}"

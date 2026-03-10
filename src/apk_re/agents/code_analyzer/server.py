@@ -17,11 +17,21 @@ For each class, assess its security relevance on a scale of 0.0 to 1.0:
 - 0.6-0.8: Significant (network clients, auth handlers, data storage)
 - 0.8-1.0: Critical (crypto implementations, certificate handling, secret management)
 
+Scores MUST be decimal values between 0.0 and 1.0. Do NOT use percentages or integers. Examples: 0.3, 0.65, 0.9 — NOT 30, 65, 90.
+
 For each class, provide:
 - class_name: the fully qualified class name
 - relevance_score: your assessment
 - summary: one sentence describing what the class does from a security perspective
-- flags: relevant categories (network, crypto, storage, auth, webview, ipc, other)"""
+- flags: assign one or more flags from this list:
+  - "network" — uses HTTP clients, sockets, URL connections, WebSocket, Retrofit, OkHttp
+  - "crypto" — uses Cipher, MessageDigest, KeyStore, SecretKey, hashing, encryption
+  - "storage" — uses SharedPreferences, SQLite, Room, file I/O, ContentProvider
+  - "auth" — handles login, tokens, passwords, sessions, OAuth, credentials
+  - "webview" — uses WebView, JavascriptInterface, WebViewClient
+  - "ipc" — uses Intent, BroadcastReceiver, ContentProvider, AIDL, Binder
+
+Every class MUST have at least one flag. Choose the most relevant category."""
 
 ANALYSIS_PROMPT = """You are an Android security analyst performing deep analysis on a Java class.
 Analyze the code thoroughly for security implications:
@@ -43,6 +53,15 @@ MAX_FILES = 30
 MAX_FILE_SIZE = 500 * 1024  # 500KB
 MAX_CHARS_PER_FILE = 8000
 
+LIBRARY_PATH_SEGMENTS = (
+    "/io/netty/", "/okio/", "/okhttp3/", "/retrofit2/",
+    "/dagger/", "/hilt_aggregated_deps/", "/androidx/",
+    "/com/google/", "/com/android/", "/kotlin/", "/kotlinx/",
+    "/org/apache/", "/io/reactivex/", "/com/squareup/",
+    "/com/facebook/", "/com/crashlytics/", "/net/jodah/",
+    "/com/braze/", "/com/airbnb/", "/exoplayer2/",
+)
+
 
 class TriageResult(BaseModel):
     classes: list[CodeAnalysisSummary] = Field(default_factory=list)
@@ -52,6 +71,9 @@ def _find_relevant_files(source_dir: Path) -> list[Path]:
     """Pre-filter .java files for security-relevant keywords."""
     relevant: list[tuple[int, Path]] = []
     for java_file in source_dir.rglob("*.java"):
+        file_str = str(java_file)
+        if any(seg in file_str for seg in LIBRARY_PATH_SEGMENTS):
+            continue
         if java_file.stat().st_size > MAX_FILE_SIZE:
             continue
         try:
