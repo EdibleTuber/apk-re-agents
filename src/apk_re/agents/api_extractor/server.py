@@ -11,7 +11,7 @@ OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 MODEL_NAME = os.environ.get("MODEL_NAME", "qwen2.5-coder:7b")
 
 SYSTEM_PROMPT = """You are an Android security analyst specializing in API endpoint extraction.
-Given Java source code from a decompiled Android app, identify all API endpoints:
+Given Java source code from a decompiled Android app, identify all runtime API endpoints.
 
 For each endpoint found:
 - Extract the URL or URL pattern (e.g., "/api/v1/users", "https://api.example.com/auth")
@@ -28,7 +28,30 @@ Look for:
 - Any hardcoded API base URLs or path constants
 - GraphQL endpoints and query definitions
 
+DO NOT extract:
+- URLs from comments, license headers, or source code references
+- Repository URLs (github.com, gitlab.com, bitbucket.org, sources.gett.com, etc.)
+- Documentation or specification URLs
+- URLs that are not used for runtime HTTP requests
+
+IMPORTANT: Only extract URLs that appear VERBATIM in the code. Do NOT fabricate, modify, or complete partial URLs. If you are not certain a URL appears exactly as shown in the code, do not include it.
+
 Be precise with URLs. Include path parameters like {id} as-is."""
+
+LIBRARY_PATH_SEGMENTS = (
+    "/io/netty/", "/okio/", "/okhttp3/", "/retrofit2/",
+    "/dagger/", "/hilt_aggregated_deps/", "/androidx/",
+    "/com/google/", "/com/android/", "/kotlin/", "/kotlinx/",
+    "/org/apache/", "/io/reactivex/", "/com/squareup/",
+    "/com/facebook/", "/com/crashlytics/", "/net/jodah/",
+    "/com/braze/", "/com/airbnb/", "/exoplayer2/",
+)
+
+NON_API_URL_PATTERNS = re.compile(
+    r'(?:github\.com|gitlab\.com|bitbucket\.org|sources\.gett\.com'
+    r'|stackoverflow\.com|developer\.android\.com|www\.w3\.org'
+    r'|schemas\.android\.com|apache\.org|/commit/|/blob/|/tree/)'
+)
 
 API_KEYWORDS = re.compile(
     r'(?:@GET|@POST|@PUT|@DELETE|@PATCH|@Headers|@Body|@Query|@Path|@Field|'
@@ -51,6 +74,9 @@ def _find_relevant_files(source_dir: Path) -> list[Path]:
     """Pre-filter .java files for API-related keywords."""
     relevant: list[tuple[int, Path]] = []
     for java_file in source_dir.rglob("*.java"):
+        file_str = str(java_file)
+        if any(seg in file_str for seg in LIBRARY_PATH_SEGMENTS):
+            continue
         if java_file.stat().st_size > MAX_FILE_SIZE:
             continue
         try:
@@ -112,6 +138,12 @@ def create_api_extractor_server():
             model=MODEL_NAME,
             system_prompt=SYSTEM_PROMPT,
         )
+
+        # Post-filter: remove non-API URLs (repo links, docs, etc.)
+        result.endpoints = [
+            ep for ep in result.endpoints
+            if not NON_API_URL_PATTERNS.search(ep.url)
+        ]
 
         return result.model_dump_json(indent=2)
 
