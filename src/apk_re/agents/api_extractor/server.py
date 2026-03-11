@@ -293,12 +293,15 @@ def create_api_extractor_server():
 
         # Phase 1: Regex extraction of Retrofit annotations
         retrofit_files = _extract_retrofit_endpoints(path)
+        logger.info("Phase 1: Found %d Retrofit files with annotations", len(retrofit_files))
 
         # Phase 2: Base URL discovery
         base_urls = _discover_base_urls(path)
+        logger.info("Phase 2: Found %d base URLs", len(base_urls))
 
         # Phase 3: Per-file LLM enrichment for Retrofit files
-        for file_path, annotations in retrofit_files.items():
+        for i, (file_path, annotations) in enumerate(retrofit_files.items(), 1):
+            logger.info("Phase 3: Enriching file %d/%d: %s", i, len(retrofit_files), file_path.name)
             source_class = _build_source_class(file_path, path)
 
             # Get LLM enrichment for this file
@@ -346,13 +349,19 @@ def create_api_extractor_server():
                     response_fields=resp_fields,
                 ))
 
+        logger.info("Phase 3: Enrichment complete for %d Retrofit files", len(retrofit_files))
+
         # Phase 4: Fallback for non-Retrofit APIs
         non_retrofit_files = _find_non_retrofit_files(path, set(retrofit_files.keys()))
-        for file_path in non_retrofit_files:
+        logger.info("Phase 4: Found %d non-Retrofit HTTP files", len(non_retrofit_files))
+        for i, file_path in enumerate(non_retrofit_files, 1):
+            logger.info("Phase 4: Processing file %d/%d: %s", i, len(non_retrofit_files), file_path.name)
             endpoints = _process_non_retrofit_file(
                 file_path, path, OLLAMA_HOST, MODEL_NAME
             )
             all_endpoints.extend(endpoints)
+
+        logger.info("Phase 4: Complete. Total endpoints before filtering: %d", len(all_endpoints))
 
         # Post-filter: remove non-API URLs
         all_endpoints = [
