@@ -16,6 +16,7 @@ OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 MODEL_NAME = os.environ.get("MODEL_NAME", "qwen2.5-coder:7b")
 
 MAX_FILE_SIZE = 500 * 1024  # 500KB
+MAX_NON_RETROFIT_FILES = 15  # Cap Phase 4 to avoid unbounded LLM call chains
 
 # --- Phase 1: Retrofit annotation regex ---
 RETROFIT_ANNOTATION = re.compile(
@@ -205,8 +206,12 @@ def _build_source_class(file_path: Path, source_dir: Path) -> str:
 # --- Fallback: non-Retrofit file discovery ---
 
 def _find_non_retrofit_files(source_dir: Path, retrofit_files: set[Path]) -> list[Path]:
-    """Find files using OkHttp/Volley/HttpURLConnection that aren't Retrofit interfaces."""
-    results: list[Path] = []
+    """Find files using OkHttp/Volley/HttpURLConnection that aren't Retrofit interfaces.
+
+    Returns up to MAX_NON_RETROFIT_FILES files, prioritised by keyword match density
+    so the most API-heavy files are analysed first.
+    """
+    results: list[tuple[int, Path]] = []
     for java_file in source_dir.rglob("*.java"):
         if java_file in retrofit_files:
             continue
@@ -220,10 +225,12 @@ def _find_non_retrofit_files(source_dir: Path, retrofit_files: set[Path]) -> lis
         except OSError:
             continue
 
-        if NON_RETROFIT_KEYWORDS.search(content):
-            results.append(java_file)
+        matches = NON_RETROFIT_KEYWORDS.findall(content)
+        if matches:
+            results.append((len(matches), java_file))
 
-    return results
+    results.sort(key=lambda x: x[0], reverse=True)
+    return [path for _, path in results[:MAX_NON_RETROFIT_FILES]]
 
 
 def _process_non_retrofit_file(

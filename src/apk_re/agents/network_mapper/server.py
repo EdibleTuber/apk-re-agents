@@ -60,9 +60,25 @@ _FP_URL_PREFIXES = (
     "https://developer.android.com",
 )
 
+# Media file extensions — hardcoded CDN content URLs (streams, images, video) are
+# never API endpoints regardless of which app or CDN is involved.
+_MEDIA_EXTENSION_PATTERN = re.compile(
+    r'\.(m3u8?|mp4|webm|mkv|png|jpe?g|gif|svg|webp)(\?.*)?$',
+    re.IGNORECASE,
+)
+
+# Malformed/truncated URLs from JADX string rendering or concatenation artifacts.
+_MALFORMED_URL_PATTERN = re.compile(r'[\u2026\\]')
+
 
 def _is_fp_url(url: str) -> bool:
-    return any(url.startswith(p) for p in _FP_URL_PREFIXES)
+    if any(url.startswith(p) for p in _FP_URL_PREFIXES):
+        return True
+    if _MEDIA_EXTENSION_PATTERN.search(url):
+        return True
+    if _MALFORMED_URL_PATTERN.search(url):
+        return True
+    return False
 
 MAX_FILES = 20
 MAX_FILE_SIZE = 500 * 1024  # 500KB
