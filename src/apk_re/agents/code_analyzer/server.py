@@ -232,5 +232,6 @@ def create_code_analyzer_server():
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     server = create_code_analyzer_server()
     server.run(transport="sse")

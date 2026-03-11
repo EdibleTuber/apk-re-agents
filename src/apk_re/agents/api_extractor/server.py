@@ -379,5 +379,6 @@ def create_api_extractor_server():
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     server = create_api_extractor_server()
     server.run(transport="sse")

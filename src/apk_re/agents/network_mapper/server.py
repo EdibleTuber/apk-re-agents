@@ -218,5 +218,6 @@ def create_network_mapper_server():
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     server = create_network_mapper_server()
     server.run(transport="sse")
