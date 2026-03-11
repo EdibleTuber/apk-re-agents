@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -9,6 +10,8 @@ from mcp import ClientSession
 from mcp.client.sse import sse_client
 
 from apk_re.schemas import JobRequest, JobStatus
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -60,8 +63,10 @@ class Pipeline:
 
         for stage in self.stages:
             status.current_stage = stage.name
+            logger.info("Starting stage: %s", stage.name)
             self._write_status(job_dir, status)
             await self._run_stage(stage, job)
+            logger.info("Completed stage: %s", stage.name)
 
         status.state = "completed"
         status.current_stage = None
@@ -91,6 +96,7 @@ class Pipeline:
         else:
             findings_file = findings_dir / f"{agent_name}.json"
 
+        logger.info("Calling agent: %s (stage: %s)", agent_name, stage_name)
         try:
             # Per-file LLM calls can take 30-60min total; default 5min timeout is too short
             async with sse_client(url, sse_read_timeout=60 * 60) as (read, write):
@@ -107,7 +113,9 @@ class Pipeline:
                     findings_file.write_text(
                         json.dumps(result, indent=2) if isinstance(result, dict) else str(result)
                     )
+            logger.info("Agent %s completed successfully", agent_name)
         except Exception as e:
+            logger.exception("Agent %s failed", agent_name)
             error_result = {"status": "error", "agent": agent_name, "error": str(e)}
             findings_file.write_text(json.dumps(error_result, indent=2))
 

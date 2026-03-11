@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 
 from apk_re.coordinator.pipeline import Pipeline
 from apk_re.schemas import JobRequest, JobStatus
+
+logger = logging.getLogger(__name__)
 
 
 def create_app(shared_volume: str = "/data/apk_re/shared", agent_urls: dict[str, str] | None = None) -> FastAPI:
@@ -43,4 +46,9 @@ def create_app(shared_volume: str = "/data/apk_re/shared", agent_urls: dict[str,
 
 
 async def _run_pipeline(pipeline: Pipeline, job: JobRequest) -> None:
-    await pipeline.run(job)
+    try:
+        logger.info("Pipeline started for job %s", job.job_id)
+        await pipeline.run(job)
+        logger.info("Pipeline completed for job %s", job.job_id)
+    except Exception:
+        logger.exception("Pipeline failed for job %s", job.job_id)
