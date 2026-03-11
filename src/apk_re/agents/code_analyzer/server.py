@@ -3,6 +3,8 @@ import os
 import re
 from pathlib import Path
 
+import anyio
+
 from pydantic import BaseModel, Field
 
 from apk_re.agents.base.base_agent import create_agent_server, call_ollama, is_library_path
@@ -85,11 +87,126 @@ def _find_relevant_files(source_dir: Path) -> list[Path]:
     return [path for _, path in relevant[:MAX_FILES]]
 
 
+def _triage_classes_impl(source_dir: str) -> str:
+    path = Path(source_dir)
+    if not path.is_absolute():
+        path = Path("/work") / path
+    if not path.exists():
+        return f"Error: directory not found: {path}"
+
+    relevant_files = _find_relevant_files(path)
+    if not relevant_files:
+        return TriageResult(classes=[]).model_dump_json(indent=2)
+
+    all_classes: list[CodeAnalysisSummary] = []
+    for i in range(0, len(relevant_files), TRIAGE_BATCH_SIZE):
+        batch = relevant_files[i:i + TRIAGE_BATCH_SIZE]
+        file_sections: list[str] = []
+        for f in batch:
+            try:
+                content = f.read_text(errors="ignore")
+            except OSError:
+                continue
+            if len(content) > MAX_CHARS_PER_FILE:
+                content = content[:MAX_CHARS_PER_FILE] + "\n... (truncated)"
+            try:
+                file_sections.append(f"--- {f.relative_to(path)} ---\n{content}")
+            except ValueError:
+                file_sections.append(f"--- {f.name} ---\n{content}")
+
+        if not file_sections:
+            continue
+
+        prompt = (
+            "Triage the following decompiled Java classes for security relevance. "
+            "Score each class and provide a summary and flags:\n\n"
+            + "\n\n".join(file_sections)
+        )
+
+        try:
+            result = call_ollama(
+                prompt=prompt,
+                output_schema=TriageResult,
+                ollama_host=OLLAMA_HOST,
+                model=MODEL_NAME,
+                system_prompt=TRIAGE_PROMPT,
+            )
+            all_classes.extend(result.classes)
+        except Exception:
+            logger.warning(
+                "LLM triage batch failed (files %d-%d)",
+                i, i + len(batch) - 1,
+                exc_info=True,
+            )
+
+    sent_classes = set()
+    for f in relevant_files:
+        try:
+            rel = str(f.relative_to(path))
+        except ValueError:
+            continue
+        class_name = rel.replace("/", ".").replace(".java", "")
+        if class_name.startswith("sources."):
+            class_name = class_name[len("sources."):]
+        sent_classes.add(class_name)
+
+    validated = []
+    for cls in all_classes:
+        if cls.class_name not in sent_classes:
+            continue
+        if cls.relevance_score > 1.0:
+            cls.relevance_score = min(cls.relevance_score / 100.0, 1.0)
+        if not cls.flags:
+            matching_files = [f for f in relevant_files if cls.class_name.replace(".", "/") in str(f)]
+            if matching_files:
+                try:
+                    content = matching_files[0].read_text(errors="ignore")
+                except OSError:
+                    content = ""
+                if any(kw in content for kw in ("Http", "Socket", "Url", "Retrofit", "OkHttp", "Volley")):
+                    cls.flags = ["network"]
+                elif any(kw in content for kw in ("Cipher", "KeyStore", "MessageDigest", "SecretKey")):
+                    cls.flags = ["crypto"]
+                elif any(kw in content for kw in ("SharedPreferences", "SQLite", "ContentProvider", "Room")):
+                    cls.flags = ["storage"]
+                elif any(kw in content for kw in ("login", "token", "password", "auth", "credential", "session")):
+                    cls.flags = ["auth"]
+                else:
+                    cls.flags = ["other"]
+            else:
+                cls.flags = ["other"]
+        validated.append(cls)
+
+    return TriageResult(classes=validated).model_dump_json(indent=2)
+
+
+def _analyze_class_impl(file_path: str) -> str:
+    path = Path(file_path)
+    if not path.is_absolute():
+        path = Path("/work") / path
+    if not path.exists():
+        return f"Error: file not found: {path}"
+
+    content = path.read_text(errors="ignore")
+    prompt = (
+        f"Perform a deep security analysis on this Java class:\n\n"
+        f"--- {path.name} ---\n{content}"
+    )
+    result = call_ollama(
+        prompt=prompt,
+        output_schema=CodeAnalysisSummary,
+        ollama_host=OLLAMA_HOST,
+        model=MODEL_NAME,
+        system_prompt=ANALYSIS_PROMPT,
+    )
+    return result.model_dump_json(indent=2)
+
+
 def create_code_analyzer_server():
     server = create_agent_server("code_analyzer")
 
     @server.tool()
-    def triage_classes(source_dir: str) -> str:
+    async def triage_classes(source_dir: str) -> str:
         """Triage decompiled Java classes by security relevance.
 
         Pre-filters files using regex for security-relevant keywords, then
@@ -98,135 +215,16 @@ def create_code_analyzer_server():
         Args:
             source_dir: Path to the decompiled source directory (e.g., /work/decompiled/jadx).
         """
-        path = Path(source_dir)
-        if not path.is_absolute():
-            path = Path("/work") / path
-        if not path.exists():
-            return f"Error: directory not found: {path}"
-
-        relevant_files = _find_relevant_files(path)
-        if not relevant_files:
-            return TriageResult(classes=[]).model_dump_json(indent=2)
-
-        # Process files in batches
-        all_classes: list[CodeAnalysisSummary] = []
-        for i in range(0, len(relevant_files), TRIAGE_BATCH_SIZE):
-            batch = relevant_files[i:i + TRIAGE_BATCH_SIZE]
-            file_sections: list[str] = []
-            for f in batch:
-                try:
-                    content = f.read_text(errors="ignore")
-                except OSError:
-                    continue
-                if len(content) > MAX_CHARS_PER_FILE:
-                    content = content[:MAX_CHARS_PER_FILE] + "\n... (truncated)"
-                try:
-                    file_sections.append(f"--- {f.relative_to(path)} ---\n{content}")
-                except ValueError:
-                    file_sections.append(f"--- {f.name} ---\n{content}")
-
-            if not file_sections:
-                continue
-
-            prompt = (
-                "Triage the following decompiled Java classes for security relevance. "
-                "Score each class and provide a summary and flags:\n\n"
-                + "\n\n".join(file_sections)
-            )
-
-            try:
-                result = call_ollama(
-                    prompt=prompt,
-                    output_schema=TriageResult,
-                    ollama_host=OLLAMA_HOST,
-                    model=MODEL_NAME,
-                    system_prompt=TRIAGE_PROMPT,
-                )
-                all_classes.extend(result.classes)
-            except Exception:
-                logger.warning(
-                    "LLM triage batch failed (files %d-%d)",
-                    i, i + len(batch) - 1,
-                    exc_info=True,
-                )
-
-        # Build set of class names from files actually sent for hallucination check
-        sent_classes = set()
-        for f in relevant_files:
-            try:
-                rel = str(f.relative_to(path))
-            except ValueError:
-                continue
-            # sources/com/ifit/glassos/Foo.java -> com.ifit.glassos.Foo
-            class_name = rel.replace("/", ".").replace(".java", "")
-            if class_name.startswith("sources."):
-                class_name = class_name[len("sources."):]
-            sent_classes.add(class_name)
-
-        # Post-process: clamp scores, filter hallucinations, assign default flags
-        validated = []
-        for cls in all_classes:
-            # Remove hallucinated classes
-            if cls.class_name not in sent_classes:
-                continue
-            # Clamp scores to 0.0-1.0 (model often outputs percentages)
-            if cls.relevance_score > 1.0:
-                cls.relevance_score = min(cls.relevance_score / 100.0, 1.0)
-            # Assign default flags if empty
-            if not cls.flags:
-                # Look up the file content to infer flags
-                matching_files = [f for f in relevant_files if cls.class_name.replace(".", "/") in str(f)]
-                if matching_files:
-                    try:
-                        content = matching_files[0].read_text(errors="ignore")
-                    except OSError:
-                        content = ""
-                    if any(kw in content for kw in ("Http", "Socket", "Url", "Retrofit", "OkHttp", "Volley")):
-                        cls.flags = ["network"]
-                    elif any(kw in content for kw in ("Cipher", "KeyStore", "MessageDigest", "SecretKey")):
-                        cls.flags = ["crypto"]
-                    elif any(kw in content for kw in ("SharedPreferences", "SQLite", "ContentProvider", "Room")):
-                        cls.flags = ["storage"]
-                    elif any(kw in content for kw in ("login", "token", "password", "auth", "credential", "session")):
-                        cls.flags = ["auth"]
-                    else:
-                        cls.flags = ["other"]
-                else:
-                    cls.flags = ["other"]
-            validated.append(cls)
-
-        result = TriageResult(classes=validated)
-        return result.model_dump_json(indent=2)
+        return await anyio.to_thread.run_sync(_triage_classes_impl, source_dir)
 
     @server.tool()
-    def analyze_class(file_path: str) -> str:
+    async def analyze_class(file_path: str) -> str:
         """Perform deep security analysis on a single Java class file.
 
         Args:
             file_path: Path to the Java file to analyze.
         """
-        path = Path(file_path)
-        if not path.is_absolute():
-            path = Path("/work") / path
-        if not path.exists():
-            return f"Error: file not found: {path}"
-
-        content = path.read_text(errors="ignore")
-
-        prompt = (
-            f"Perform a deep security analysis on this Java class:\n\n"
-            f"--- {path.name} ---\n{content}"
-        )
-
-        result = call_ollama(
-            prompt=prompt,
-            output_schema=CodeAnalysisSummary,
-            ollama_host=OLLAMA_HOST,
-            model=MODEL_NAME,
-            system_prompt=ANALYSIS_PROMPT,
-        )
-
-        return result.model_dump_json(indent=2)
+        return await anyio.to_thread.run_sync(_analyze_class_impl, file_path)
 
     return server
 

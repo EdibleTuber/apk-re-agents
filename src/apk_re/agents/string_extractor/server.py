@@ -5,6 +5,8 @@ import re
 from collections import Counter
 from pathlib import Path
 
+import anyio
+
 from apk_re.agents.base.base_agent import create_agent_server, is_library_path
 from apk_re.schemas import StringFinding
 
@@ -268,16 +270,7 @@ def extract_strings_from_file(
 def create_string_extractor_server():
     server = create_agent_server("string_extractor")
 
-    @server.tool()
-    def extract_strings(source_dir: str) -> str:
-        """Scan decompiled Java source files for security-relevant strings.
-
-        Finds API keys, URLs, tokens, and encoded blobs using regex patterns
-        and Shannon entropy analysis.
-
-        Args:
-            source_dir: Path to decompiled source directory (e.g. /work/decompiled/jadx).
-        """
+    def _extract_strings_impl(source_dir: str) -> str:
         root = Path(source_dir)
         if not root.is_absolute():
             root = Path("/work") / root
@@ -302,10 +295,19 @@ def create_string_extractor_server():
                 all_findings = all_findings[:MAX_FINDINGS]
                 break
 
-        return json.dumps(
-            [f.model_dump() for f in all_findings],
-            indent=2,
-        )
+        return json.dumps([f.model_dump() for f in all_findings], indent=2)
+
+    @server.tool()
+    async def extract_strings(source_dir: str) -> str:
+        """Scan decompiled Java source files for security-relevant strings.
+
+        Finds API keys, URLs, tokens, and encoded blobs using regex patterns
+        and Shannon entropy analysis.
+
+        Args:
+            source_dir: Path to decompiled source directory (e.g. /work/decompiled/jadx).
+        """
+        return await anyio.to_thread.run_sync(_extract_strings_impl, source_dir)
 
     return server
 

@@ -3,6 +3,8 @@ import os
 import re
 from pathlib import Path
 
+import anyio
+
 from pydantic import BaseModel, Field
 
 from apk_re.agents.base.base_agent import create_agent_server, call_ollama, is_library_path
@@ -136,83 +138,81 @@ def _extract_url_literals(files: list[Path], source_dir: Path) -> list[NetworkFi
     return findings
 
 
+def _map_network_impl(source_dir: str) -> str:
+    path = Path(source_dir)
+    if not path.is_absolute():
+        path = Path("/work") / path
+    if not path.exists():
+        return f"Error: directory not found: {path}"
+
+    relevant_files = _find_relevant_files(path)
+    if not relevant_files:
+        return NetworkAnalysisResult(findings=[]).model_dump_json(indent=2)
+
+    all_findings = _extract_url_literals(relevant_files, path)
+
+    for f in relevant_files:
+        try:
+            content = f.read_text(errors="ignore")
+        except OSError:
+            continue
+        if len(content) > MAX_CHARS_PER_FILE:
+            content = content[:MAX_CHARS_PER_FILE] + "\n... (truncated)"
+
+        try:
+            rel = str(f.relative_to(path))
+        except ValueError:
+            rel = str(f)
+
+        source_class = rel.replace("/", ".").replace(".java", "")
+        if source_class.startswith("sources."):
+            source_class = source_class[len("sources."):]
+
+        prompt = (
+            f"Analyze this single Java file for network behavior:\n\n"
+            f"--- {rel} ---\n{content}"
+        )
+
+        try:
+            result = call_ollama(
+                prompt=prompt,
+                output_schema=NetworkAnalysisResult,
+                ollama_host=OLLAMA_HOST,
+                model=MODEL_NAME,
+                system_prompt=SYSTEM_PROMPT,
+            )
+            for finding in result.findings:
+                finding.source_class = source_class
+            all_findings.extend(result.findings)
+        except Exception:
+            logger.warning("LLM call failed for file %s", rel, exc_info=True)
+
+    for finding in all_findings:
+        if not ENDPOINT_PATTERN.match(finding.endpoint):
+            finding.endpoint = "unknown"
+
+    seen: set[tuple[str, str]] = set()
+    deduped: list[NetworkFinding] = []
+    for finding in all_findings:
+        key = (finding.endpoint, finding.source_class)
+        if key not in seen:
+            seen.add(key)
+            deduped.append(finding)
+
+    return NetworkAnalysisResult(findings=deduped).model_dump_json(indent=2)
+
+
 def create_network_mapper_server():
     server = create_agent_server("network_mapper")
 
     @server.tool()
-    def map_network(source_dir: str) -> str:
+    async def map_network(source_dir: str) -> str:
         """Analyze decompiled Java source files for network-related behavior.
 
         Args:
             source_dir: Path to the decompiled source directory (e.g., /work/decompiled/jadx).
         """
-        path = Path(source_dir)
-        if not path.is_absolute():
-            path = Path("/work") / path
-        if not path.exists():
-            return f"Error: directory not found: {path}"
-
-        relevant_files = _find_relevant_files(path)
-        if not relevant_files:
-            return NetworkAnalysisResult(findings=[]).model_dump_json(indent=2)
-
-        # Phase 1: Regex extraction of hardcoded URL literals
-        all_findings = _extract_url_literals(relevant_files, path)
-
-        # Phase 2: Per-file LLM calls
-        for f in relevant_files:
-            try:
-                content = f.read_text(errors="ignore")
-            except OSError:
-                continue
-            if len(content) > MAX_CHARS_PER_FILE:
-                content = content[:MAX_CHARS_PER_FILE] + "\n... (truncated)"
-
-            try:
-                rel = str(f.relative_to(path))
-            except ValueError:
-                rel = str(f)
-
-            prompt = (
-                f"Analyze this single Java file for network behavior:\n\n"
-                f"--- {rel} ---\n{content}"
-            )
-
-            # Compute source_class from file path for consistency with regex findings
-            source_class = rel.replace("/", ".").replace(".java", "")
-            if source_class.startswith("sources."):
-                source_class = source_class[len("sources."):]
-
-            try:
-                result = call_ollama(
-                    prompt=prompt,
-                    output_schema=NetworkAnalysisResult,
-                    ollama_host=OLLAMA_HOST,
-                    model=MODEL_NAME,
-                    system_prompt=SYSTEM_PROMPT,
-                )
-                # Override source_class so it matches regex findings for dedup
-                for finding in result.findings:
-                    finding.source_class = source_class
-                all_findings.extend(result.findings)
-            except Exception:
-                logger.warning("LLM call failed for file %s", rel, exc_info=True)
-
-        # Post-process: validate endpoint field
-        for finding in all_findings:
-            if not ENDPOINT_PATTERN.match(finding.endpoint):
-                finding.endpoint = "unknown"
-
-        # Deduplicate by (endpoint, source_class)
-        seen: set[tuple[str, str]] = set()
-        deduped: list[NetworkFinding] = []
-        for finding in all_findings:
-            key = (finding.endpoint, finding.source_class)
-            if key not in seen:
-                seen.add(key)
-                deduped.append(finding)
-
-        return NetworkAnalysisResult(findings=deduped).model_dump_json(indent=2)
+        return await anyio.to_thread.run_sync(_map_network_impl, source_dir)
 
     return server
 

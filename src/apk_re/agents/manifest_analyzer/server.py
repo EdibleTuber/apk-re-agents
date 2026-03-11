@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 
+import anyio
+
 from apk_re.agents.base.base_agent import create_agent_server, call_ollama
 from apk_re.schemas import ManifestFindings
 
@@ -80,13 +82,7 @@ Be thorough. Extract every permission and every component. Do not skip any."""
 def create_manifest_analyzer_server():
     server = create_agent_server("manifest_analyzer")
 
-    @server.tool()
-    def analyze_manifest(manifest_path: str) -> str:
-        """Analyze an AndroidManifest.xml file and extract security-relevant findings.
-
-        Args:
-            manifest_path: Path to AndroidManifest.xml on the shared volume.
-        """
+    def _analyze_manifest_impl(manifest_path: str) -> str:
         path = Path(manifest_path)
         if not path.is_absolute():
             path = Path("/work") / path
@@ -94,7 +90,6 @@ def create_manifest_analyzer_server():
             return f"Error: file not found: {path}"
 
         manifest_content = path.read_text()
-
         findings = call_ollama(
             prompt=f"Analyze this AndroidManifest.xml and extract all permissions, activities, services, and receivers:\n\n{manifest_content}",
             output_schema=ManifestFindings,
@@ -103,7 +98,6 @@ def create_manifest_analyzer_server():
             system_prompt=SYSTEM_PROMPT,
         )
 
-        # Post-process: override permission classification for known permissions
         for perm in findings.permissions:
             if perm.name in KNOWN_NORMAL_PERMISSIONS:
                 perm.dangerous = False
@@ -111,6 +105,15 @@ def create_manifest_analyzer_server():
                 perm.dangerous = True
 
         return findings.model_dump_json(indent=2)
+
+    @server.tool()
+    async def analyze_manifest(manifest_path: str) -> str:
+        """Analyze an AndroidManifest.xml file and extract security-relevant findings.
+
+        Args:
+            manifest_path: Path to AndroidManifest.xml on the shared volume.
+        """
+        return await anyio.to_thread.run_sync(_analyze_manifest_impl, manifest_path)
 
     return server
 

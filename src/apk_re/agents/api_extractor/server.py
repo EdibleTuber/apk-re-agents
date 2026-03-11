@@ -3,6 +3,8 @@ import os
 import re
 from pathlib import Path
 
+import anyio
+
 logger = logging.getLogger(__name__)
 
 from pydantic import BaseModel, Field
@@ -267,11 +269,81 @@ def _process_non_retrofit_file(
         return []
 
 
+def _extract_apis_impl(source_dir: str) -> str:
+    path = Path(source_dir)
+    if not path.is_absolute():
+        path = Path("/work") / path
+    if not path.exists():
+        return f"Error: directory not found: {path}"
+
+    all_endpoints: list[EndpointFinding] = []
+
+    # Phase 1: Regex extraction of Retrofit annotations
+    retrofit_files = _extract_retrofit_endpoints(path)
+    logger.info("Phase 1: Found %d Retrofit files with annotations", len(retrofit_files))
+
+    # Phase 2: Base URL discovery
+    base_urls = _discover_base_urls(path)
+    logger.info("Phase 2: Found %d base URLs", len(base_urls))
+
+    # Phase 3: Per-file LLM enrichment for Retrofit files
+    for i, (file_path, annotations) in enumerate(retrofit_files.items(), 1):
+        logger.info("Phase 3: Enriching file %d/%d: %s", i, len(retrofit_files), file_path.name)
+        source_class = _build_source_class(file_path, path)
+
+        enrichment = _enrich_file_with_llm(file_path, path, OLLAMA_HOST, MODEL_NAME)
+
+        # Create EndpointFinding for each regex-extracted annotation
+        for http_method, url_path in annotations:
+            req_fields: dict[str, str] = {}
+            resp_fields: dict[str, str] = {}
+
+            for ep_schema in enrichment.endpoints:
+                if len(annotations) == 1 and len(enrichment.endpoints) == 1:
+                    req_fields = ep_schema.request_fields
+                    resp_fields = ep_schema.response_fields
+                    break
+                if ep_schema.method_name:
+                    path_parts = url_path.strip("/").split("/")
+                    last_part = path_parts[-1] if path_parts else ""
+                    if last_part.lower().rstrip("s") in ep_schema.method_name.lower():
+                        req_fields = ep_schema.request_fields
+                        resp_fields = ep_schema.response_fields
+                        break
+
+            all_endpoints.append(EndpointFinding(
+                url=url_path,
+                http_method=http_method,
+                source_class=source_class,
+                request_fields=req_fields,
+                response_fields=resp_fields,
+            ))
+
+    logger.info("Phase 3: Enrichment complete for %d Retrofit files", len(retrofit_files))
+
+    # Phase 4: Fallback for non-Retrofit APIs
+    non_retrofit_files = _find_non_retrofit_files(path, set(retrofit_files.keys()))
+    logger.info("Phase 4: Found %d non-Retrofit HTTP files", len(non_retrofit_files))
+    for i, file_path in enumerate(non_retrofit_files, 1):
+        logger.info("Phase 4: Processing file %d/%d: %s", i, len(non_retrofit_files), file_path.name)
+        endpoints = _process_non_retrofit_file(file_path, path, OLLAMA_HOST, MODEL_NAME)
+        all_endpoints.extend(endpoints)
+
+    logger.info("Phase 4: Complete. Total endpoints before filtering: %d", len(all_endpoints))
+
+    all_endpoints = [
+        ep for ep in all_endpoints
+        if not NON_API_URL_PATTERNS.search(ep.url)
+    ]
+
+    return ApiAnalysisResult(endpoints=all_endpoints, base_urls=base_urls).model_dump_json(indent=2)
+
+
 def create_api_extractor_server():
     server = create_agent_server("api_extractor")
 
     @server.tool()
-    def extract_apis(source_dir: str) -> str:
+    async def extract_apis(source_dir: str) -> str:
         """Analyze decompiled Java source files for API endpoint definitions.
 
         Uses a hybrid regex+LLM approach:
@@ -283,97 +355,7 @@ def create_api_extractor_server():
         Args:
             source_dir: Path to the decompiled source directory (e.g., /work/decompiled/jadx).
         """
-        path = Path(source_dir)
-        if not path.is_absolute():
-            path = Path("/work") / path
-        if not path.exists():
-            return f"Error: directory not found: {path}"
-
-        all_endpoints: list[EndpointFinding] = []
-
-        # Phase 1: Regex extraction of Retrofit annotations
-        retrofit_files = _extract_retrofit_endpoints(path)
-        logger.info("Phase 1: Found %d Retrofit files with annotations", len(retrofit_files))
-
-        # Phase 2: Base URL discovery
-        base_urls = _discover_base_urls(path)
-        logger.info("Phase 2: Found %d base URLs", len(base_urls))
-
-        # Phase 3: Per-file LLM enrichment for Retrofit files
-        for i, (file_path, annotations) in enumerate(retrofit_files.items(), 1):
-            logger.info("Phase 3: Enriching file %d/%d: %s", i, len(retrofit_files), file_path.name)
-            source_class = _build_source_class(file_path, path)
-
-            # Get LLM enrichment for this file
-            enrichment = _enrich_file_with_llm(
-                file_path, path, OLLAMA_HOST, MODEL_NAME
-            )
-
-            # Build a lookup from method_name -> enrichment schema
-            enrichment_by_method: dict[str, EndpointSchema] = {}
-            for ep_schema in enrichment.endpoints:
-                if ep_schema.method_name:
-                    enrichment_by_method[ep_schema.method_name] = ep_schema
-
-            # Create EndpointFinding for each regex-extracted annotation
-            for http_method, url_path in annotations:
-                # Try to find enrichment data (best-effort match by method)
-                # We can't perfectly match regex endpoints to LLM methods,
-                # so we try to match by URL path appearing in the enrichment
-                req_fields: dict[str, str] = {}
-                resp_fields: dict[str, str] = {}
-
-                # Check each enriched endpoint for a plausible match
-                for ep_schema in enrichment.endpoints:
-                    # Use the enrichment if it's the only one, or if there's
-                    # some heuristic match
-                    if len(annotations) == 1 and len(enrichment.endpoints) == 1:
-                        req_fields = ep_schema.request_fields
-                        resp_fields = ep_schema.response_fields
-                        break
-                    if ep_schema.method_name:
-                        # Heuristic: method name often contains the path element
-                        # e.g., getUsers for /api/v1/users
-                        path_parts = url_path.strip("/").split("/")
-                        last_part = path_parts[-1] if path_parts else ""
-                        if last_part.lower().rstrip("s") in ep_schema.method_name.lower():
-                            req_fields = ep_schema.request_fields
-                            resp_fields = ep_schema.response_fields
-                            break
-
-                all_endpoints.append(EndpointFinding(
-                    url=url_path,
-                    http_method=http_method,
-                    source_class=source_class,
-                    request_fields=req_fields,
-                    response_fields=resp_fields,
-                ))
-
-        logger.info("Phase 3: Enrichment complete for %d Retrofit files", len(retrofit_files))
-
-        # Phase 4: Fallback for non-Retrofit APIs
-        non_retrofit_files = _find_non_retrofit_files(path, set(retrofit_files.keys()))
-        logger.info("Phase 4: Found %d non-Retrofit HTTP files", len(non_retrofit_files))
-        for i, file_path in enumerate(non_retrofit_files, 1):
-            logger.info("Phase 4: Processing file %d/%d: %s", i, len(non_retrofit_files), file_path.name)
-            endpoints = _process_non_retrofit_file(
-                file_path, path, OLLAMA_HOST, MODEL_NAME
-            )
-            all_endpoints.extend(endpoints)
-
-        logger.info("Phase 4: Complete. Total endpoints before filtering: %d", len(all_endpoints))
-
-        # Post-filter: remove non-API URLs
-        all_endpoints = [
-            ep for ep in all_endpoints
-            if not NON_API_URL_PATTERNS.search(ep.url)
-        ]
-
-        result = ApiAnalysisResult(
-            endpoints=all_endpoints,
-            base_urls=base_urls,
-        )
-        return result.model_dump_json(indent=2)
+        return await anyio.to_thread.run_sync(_extract_apis_impl, source_dir)
 
     return server
 

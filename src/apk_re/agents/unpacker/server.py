@@ -1,55 +1,65 @@
 import subprocess
 from pathlib import Path
 
+import anyio
+
 from apk_re.agents.base.base_agent import create_agent_server
+
+
+def _run_jadx_impl(apk_path: str, output_dir: str) -> str:
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    try:
+        result = subprocess.run(
+            ["jadx", "--deobf", "-d", output_dir, apk_path],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        if result.returncode != 0:
+            return f"jadx error: {result.stderr}"
+        return f"Decompiled to {output_dir}"
+    except FileNotFoundError:
+        return "Error: jadx not found in PATH"
+
+
+def _run_apktool_impl(apk_path: str, output_dir: str) -> str:
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    try:
+        result = subprocess.run(
+            ["apktool", "d", "-f", "-o", output_dir, apk_path],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        if result.returncode != 0:
+            return f"apktool error: {result.stderr}"
+        return f"Decoded to {output_dir}"
+    except FileNotFoundError:
+        return "Error: apktool not found in PATH"
 
 
 def create_unpacker_server():
     server = create_agent_server("unpacker")
 
     @server.tool()
-    def run_jadx(apk_path: str, output_dir: str = "/work/decompiled/jadx") -> str:
+    async def run_jadx(apk_path: str, output_dir: str = "/work/decompiled/jadx") -> str:
         """Decompile an APK using jadx.
 
         Args:
             apk_path: Path to the APK file.
             output_dir: Directory to write decompiled Java source.
         """
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-        try:
-            result = subprocess.run(
-                ["jadx", "--deobf", "-d", output_dir, apk_path],
-                capture_output=True,
-                text=True,
-                timeout=300,
-            )
-            if result.returncode != 0:
-                return f"jadx error: {result.stderr}"
-            return f"Decompiled to {output_dir}"
-        except FileNotFoundError:
-            return "Error: jadx not found in PATH"
+        return await anyio.to_thread.run_sync(_run_jadx_impl, apk_path, output_dir)
 
     @server.tool()
-    def run_apktool(apk_path: str, output_dir: str = "/work/decompiled/apktool") -> str:
+    async def run_apktool(apk_path: str, output_dir: str = "/work/decompiled/apktool") -> str:
         """Decode an APK using apktool (resources + manifest).
 
         Args:
             apk_path: Path to the APK file.
             output_dir: Directory to write decoded resources.
         """
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-        try:
-            result = subprocess.run(
-                ["apktool", "d", "-f", "-o", output_dir, apk_path],
-                capture_output=True,
-                text=True,
-                timeout=300,
-            )
-            if result.returncode != 0:
-                return f"apktool error: {result.stderr}"
-            return f"Decoded to {output_dir}"
-        except FileNotFoundError:
-            return "Error: apktool not found in PATH"
+        return await anyio.to_thread.run_sync(_run_apktool_impl, apk_path, output_dir)
 
     return server
 

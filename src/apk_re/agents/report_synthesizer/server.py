@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 
+import anyio
+
 from pydantic import BaseModel, Field
 
 from apk_re.agents.base.base_agent import create_agent_server, call_ollama
@@ -70,13 +72,7 @@ def _load_findings(job_dir: Path) -> str:
 def create_report_synthesizer_server():
     server = create_agent_server("report_synthesizer")
 
-    @server.tool()
-    def synthesize_report(job_id: str) -> str:
-        """Synthesize a security analysis report from all agent findings.
-
-        Args:
-            job_id: The job identifier used to locate findings under /work/findings/{job_id}/.
-        """
+    def _synthesize_report_impl(job_id: str) -> str:
         job_dir = Path("/work/findings") / job_id
         if not job_dir.exists():
             return f"Error: findings directory not found: {job_dir}"
@@ -88,7 +84,6 @@ def create_report_synthesizer_server():
                 risk_level="unknown",
             ).model_dump_json(indent=2)
 
-        # Truncate total prompt to stay within context window
         if len(findings_text) > MAX_TOTAL_CHARS:
             findings_text = findings_text[:MAX_TOTAL_CHARS] + "\n... (truncated)"
 
@@ -104,8 +99,16 @@ def create_report_synthesizer_server():
             model=MODEL_NAME,
             system_prompt=SYSTEM_PROMPT,
         )
-
         return result.model_dump_json(indent=2)
+
+    @server.tool()
+    async def synthesize_report(job_id: str) -> str:
+        """Synthesize a security analysis report from all agent findings.
+
+        Args:
+            job_id: The job identifier used to locate findings under /work/findings/{job_id}/.
+        """
+        return await anyio.to_thread.run_sync(_synthesize_report_impl, job_id)
 
     return server
 
