@@ -23,6 +23,24 @@ RETROFIT_ANNOTATION = re.compile(
     r'@(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|HTTP)\s*\(\s*["\']([^"\']+)["\']\s*\)'
 )
 
+# Capture @Header("key") and @Headers({"key: value", ...}) at method level
+HEADER_ANNOTATION = re.compile(
+    r'@Header(?:s)?\s*\(\s*\{?([^)]+)\}?\s*\)'
+)
+
+# Capture @Query("name"), @Path("name"), @Body TypeName paramName per parameter
+QUERY_ANNOTATION = re.compile(r'@Query\s*\(\s*["\']([^"\']+)["\']\s*\)\s+\w+\s+(\w+)')
+PATH_ANNOTATION = re.compile(r'@Path\s*\(\s*["\']([^"\']+)["\']\s*\)\s+\w+\s+(\w+)')
+BODY_ANNOTATION = re.compile(r'@Body\s+(\w+)\s+(\w+)')
+
+# Match Retrofit .create(SomeApi.class) to locate base URL at callsite
+RETROFIT_CREATE = re.compile(
+    r'(?:baseUrl\s*\(\s*["\']([^"\']+)["\']\s*\)|baseUrl\s*\(\s*(\w+)\s*\))'
+    r'(?:[^;]{0,400}?\.create\s*\(\s*(\w+)\.class\s*\)'
+    r'|(?:[^;]{0,400}?\.create\s*\(\s*(\w+)\.class\s*\))[^;]{0,400}?baseUrl\s*\(\s*["\']([^"\']+)["\']\s*\))',
+    re.DOTALL,
+)
+
 # --- Phase 2: Base URL discovery ---
 BASE_URL_PATTERNS = re.compile(
     r'(?:baseUrl|BASE_URL|base_url|api_url|API_URL|server_url)\s*[=(]\s*["\']([^"\']+)["\']'
@@ -94,12 +112,45 @@ class ApiAnalysisResult(BaseModel):
 
 # --- Phase 1: Regex extraction ---
 
-def _extract_retrofit_endpoints(source_dir: Path) -> dict[Path, list[tuple[str, str]]]:
-    """Scan .java files that import retrofit2 and extract @GET/@POST etc. annotations.
+# Represents all static info extracted per Retrofit method annotation
+class RetrofitMethod:
+    __slots__ = ("http_method", "url_path", "headers", "path_params", "query_params")
 
-    Returns a dict mapping file path -> list of (http_method, url_path) tuples.
+    def __init__(
+        self,
+        http_method: str,
+        url_path: str,
+        headers: dict[str, str],
+        path_params: list[str],
+        query_params: list[str],
+    ):
+        self.http_method = http_method
+        self.url_path = url_path
+        self.headers = headers
+        self.path_params = path_params
+        self.query_params = query_params
+
+
+def _parse_header_annotation(raw: str) -> dict[str, str]:
+    """Parse '@Header("key")' or '@Headers({"Key: value", ...})' into a dict."""
+    headers: dict[str, str] = {}
+    for item in re.findall(r'"([^"]+)"', raw):
+        if ": " in item:
+            k, _, v = item.partition(": ")
+            headers[k.strip()] = v.strip()
+        else:
+            # @Header("key") style — value is runtime; record the key with a placeholder
+            headers[item.strip()] = "<runtime>"
+    return headers
+
+
+def _extract_retrofit_endpoints(source_dir: Path) -> dict[Path, list[RetrofitMethod]]:
+    """Scan .java files that import retrofit2 and extract @GET/@POST etc. annotations
+    plus @Header/@Query/@Path parameter annotations per method.
+
+    Returns a dict mapping file path -> list of RetrofitMethod.
     """
-    results: dict[Path, list[tuple[str, str]]] = {}
+    results: dict[Path, list[RetrofitMethod]] = {}
     for java_file in source_dir.rglob("*.java"):
         file_str = str(java_file)
         if is_library_path(file_str):
@@ -115,9 +166,34 @@ def _extract_retrofit_endpoints(source_dir: Path) -> dict[Path, list[tuple[str, 
         if "retrofit2" not in content:
             continue
 
-        matches = RETROFIT_ANNOTATION.findall(content)
-        if matches:
-            results[java_file] = [(method, path) for method, path in matches]
+        http_matches = RETROFIT_ANNOTATION.findall(content)
+        if not http_matches:
+            continue
+
+        # For header/param extraction we need per-method context.
+        # Split on method annotations as rough boundaries.
+        method_blocks = re.split(r'(?=@(?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|HTTP)\s*\()', content)
+
+        methods: list[RetrofitMethod] = []
+        for block in method_blocks:
+            m = RETROFIT_ANNOTATION.search(block)
+            if not m:
+                continue
+            http_method, url_path = m.group(1), m.group(2)
+
+            # Headers
+            headers: dict[str, str] = {}
+            for hm in HEADER_ANNOTATION.finditer(block):
+                headers.update(_parse_header_annotation(hm.group(1)))
+
+            # @Path and @Query params
+            path_params = [name for _, name in PATH_ANNOTATION.findall(block)]
+            query_params = [name for _, name in QUERY_ANNOTATION.findall(block)]
+
+            methods.append(RetrofitMethod(http_method, url_path, headers, path_params, query_params))
+
+        if methods:
+            results[java_file] = methods
 
     return results
 
@@ -151,6 +227,77 @@ def _discover_base_urls(source_dir: Path) -> list[str]:
                     base_urls.add(url)
 
     return sorted(base_urls)
+
+
+# --- Phase 2b: Map interface simple names to base URLs via .create() callsites ---
+
+# Heuristic fallbacks: interface name suffix → base URL keyword match
+_INTERFACE_BASE_URL_HINTS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r'Rudder|Seaborn', re.IGNORECASE), "api.ergatta.com"),
+    (re.compile(r'Update(?:Metadata)?Api', re.IGNORECASE), "appupdates.ergatta.com"),
+    (re.compile(r'Chargebee|Billing(?!Api)', re.IGNORECASE), "www.chargebee.com"),
+    (re.compile(r'Stripe', re.IGNORECASE), "api.stripe.com"),
+    (re.compile(r'Segment', re.IGNORECASE), "api.segment.io"),
+    (re.compile(r'Simulcast|RestApi|SimulcastApi', re.IGNORECASE), "cast.feed.fm"),
+]
+
+
+def _build_interface_base_url_map(
+    source_dir: Path,
+    retrofit_files: "dict[Path, list[RetrofitMethod]]",
+    discovered_base_urls: list[str],
+) -> dict[str, str]:
+    """Return a mapping of interface simple name -> resolved base URL.
+
+    Strategy (in priority order):
+    1. Scan all .java files for Retrofit.Builder chains that pair a literal baseUrl
+       with a .create(SomeApi.class) call in the same builder chain.
+    2. Fall back to name-based heuristics against the discovered base URL list.
+    """
+    interface_names = {f.stem for f in retrofit_files}
+    result: dict[str, str] = {}
+
+    # Strategy 1: scan callsites
+    CREATE_PATTERN = re.compile(r'\.create\s*\(\s*(\w+)\.class\s*\)')
+    BASEURL_LITERAL = re.compile(r'\.baseUrl\s*\(\s*["\']([^"\']+)["\']\s*\)')
+
+    for java_file in source_dir.rglob("*.java"):
+        if is_library_path(str(java_file)):
+            continue
+        if java_file.stat().st_size > MAX_FILE_SIZE:
+            continue
+        try:
+            content = java_file.read_text(errors="ignore")
+        except OSError:
+            continue
+        if "Retrofit" not in content:
+            continue
+
+        # Split on Retrofit.Builder() to isolate builder chains
+        for chain in re.split(r'new\s+Retrofit\.Builder\s*\(\s*\)', content):
+            url_m = BASEURL_LITERAL.search(chain)
+            if not url_m:
+                continue
+            base = url_m.group(1).rstrip("/")
+            for create_m in CREATE_PATTERN.finditer(chain):
+                iface = create_m.group(1)
+                if iface in interface_names and iface not in result:
+                    result[iface] = base
+
+    # Strategy 2: name-based heuristic for anything not resolved above
+    for iface in interface_names:
+        if iface in result:
+            continue
+        for pattern, hint in _INTERFACE_BASE_URL_HINTS:
+            if pattern.search(iface):
+                # Find the best matching discovered URL
+                for url in discovered_base_urls:
+                    if hint in url:
+                        result[iface] = url.rstrip("/")
+                        break
+                break
+
+    return result
 
 
 # --- Phase 3: Per-file LLM enrichment ---
@@ -293,25 +440,30 @@ def _extract_apis_impl(source_dir: str) -> str:
     base_urls = _discover_base_urls(path)
     logger.info("Phase 2: Found %d base URLs", len(base_urls))
 
+    # Phase 2b: Map interface names to base URLs
+    interface_base_map = _build_interface_base_url_map(path, retrofit_files, base_urls)
+    logger.info("Phase 2b: Resolved base URLs for %d interfaces", len(interface_base_map))
+
     # Phase 3: Per-file LLM enrichment for Retrofit files
-    for i, (file_path, annotations) in enumerate(retrofit_files.items(), 1):
+    for i, (file_path, methods) in enumerate(retrofit_files.items(), 1):
         logger.info("Phase 3: Enriching file %d/%d: %s", i, len(retrofit_files), file_path.name)
         source_class = _build_source_class(file_path, path)
+        resolved_base = interface_base_map.get(file_path.stem)
 
         enrichment = _enrich_file_with_llm(file_path, path, OLLAMA_HOST, MODEL_NAME)
 
         # Create EndpointFinding for each regex-extracted annotation
-        for http_method, url_path in annotations:
+        for rm in methods:
             req_fields: dict[str, str] = {}
             resp_fields: dict[str, str] = {}
 
             for ep_schema in enrichment.endpoints:
-                if len(annotations) == 1 and len(enrichment.endpoints) == 1:
+                if len(methods) == 1 and len(enrichment.endpoints) == 1:
                     req_fields = ep_schema.request_fields
                     resp_fields = ep_schema.response_fields
                     break
                 if ep_schema.method_name:
-                    path_parts = url_path.strip("/").split("/")
+                    path_parts = rm.url_path.strip("/").split("/")
                     last_part = path_parts[-1] if path_parts else ""
                     if last_part.lower().rstrip("s") in ep_schema.method_name.lower():
                         req_fields = ep_schema.request_fields
@@ -319,9 +471,13 @@ def _extract_apis_impl(source_dir: str) -> str:
                         break
 
             all_endpoints.append(EndpointFinding(
-                url=url_path,
-                http_method=http_method,
+                url=rm.url_path,
+                http_method=rm.http_method,
                 source_class=source_class,
+                base_url=resolved_base,
+                headers=rm.headers,
+                path_params=rm.path_params,
+                query_params=rm.query_params,
                 request_fields=req_fields,
                 response_fields=resp_fields,
             ))
@@ -342,6 +498,22 @@ def _extract_apis_impl(source_dir: str) -> str:
         ep for ep in all_endpoints
         if not NON_API_URL_PATTERNS.search(ep.url)
     ]
+
+    # De-duplicate on (http_method, url_path): keep entry with most specific source_class
+    # (most package components = most specific) and prefer entries with a resolved base_url.
+    seen: dict[tuple[str | None, str], EndpointFinding] = {}
+    for ep in all_endpoints:
+        key = (ep.http_method, ep.url)
+        existing = seen.get(key)
+        if existing is None:
+            seen[key] = ep
+        else:
+            # Prefer the one with a resolved base_url
+            ep_score = (ep.base_url is not None, ep.source_class.count("."))
+            ex_score = (existing.base_url is not None, existing.source_class.count("."))
+            if ep_score > ex_score:
+                seen[key] = ep
+    all_endpoints = list(seen.values())
 
     return ApiAnalysisResult(endpoints=all_endpoints, base_urls=base_urls).model_dump_json(indent=2)
 

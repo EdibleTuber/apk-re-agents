@@ -15,6 +15,9 @@ LIBRARY_PATH_SEGMENTS = (
     "/com/braze/", "/com/airbnb/", "/exoplayer2/",
     "/io/grpc/", "/org/slf4j/", "/org/codehaus/",
     "/com/fasterxml/", "/org/bouncycastle/",
+    "/com/soywiz/", "/com/barchart/", "/com/bumptech/",
+    "/com/segment/", "/fm/feed/", "/com/chargebee/",
+    "/com/alipay/", "/bo/app/",
 )
 
 

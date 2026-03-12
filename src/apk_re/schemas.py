@@ -56,6 +56,10 @@ class EndpointFinding(BaseModel):
     url: str
     http_method: str | None = None
     source_class: str
+    base_url: str | None = None          # resolved base URL if known
+    headers: dict[str, str] = Field(default_factory=dict)   # @Header annotations
+    path_params: list[str] = Field(default_factory=list)    # @Path parameter names
+    query_params: list[str] = Field(default_factory=list)   # @Query parameter names
     request_fields: dict[str, str] = Field(default_factory=dict)
     response_fields: dict[str, str] = Field(default_factory=dict)
 
