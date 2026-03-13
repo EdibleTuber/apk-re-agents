@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 
@@ -28,17 +29,6 @@ Synthesize all findings into a coherent security report:
 Be concise but thorough. Focus on security implications, not implementation details.
 Prioritize findings by severity. Flag anything that could be exploited."""
 
-FINDINGS_FILES = [
-    ("Manifest Analysis", "manifest_analyzer.json"),
-    ("String/Secrets Extraction", "string_extractor.json"),
-    ("Network Mapping", "network_mapper.json"),
-    ("Code Analysis", "code_analyzer.json"),
-    ("API Extraction", "api_extractor.json"),
-]
-
-MAX_SECTION_CHARS = 3000
-MAX_TOTAL_CHARS = 12000
-
 
 class SecurityReport(BaseModel):
     app_name: str = ""
@@ -52,20 +42,106 @@ class SecurityReport(BaseModel):
     recommendations: list[str] = Field(default_factory=list)
 
 
+# Per-section character budget for the synthesis prompt.
+# Smart selection (not blind truncation) fills each slot.
+_SECTION_BUDGETS = {
+    "manifest_analyzer":  4000,   # small file, pass most of it
+    "network_mapper":     4000,   # real endpoints only
+    "code_analyzer":      5000,   # top classes by relevance_score
+    "api_extractor":      8000,   # top endpoints, ergatta/first-party first
+    "string_extractor":   4000,   # top findings by entropy
+    "mobsf_analyzer":     4000,   # cert + apkid + niap + vuln libs
+}
+
+
+def _select_manifest(data: dict) -> dict:
+    """Pass manifest through as-is — it's always small."""
+    return data
+
+
+def _select_network(data: dict) -> dict:
+    """Real (non-unknown) endpoints first, unknown ones dropped."""
+    findings = data.get("findings", [])
+    real = [f for f in findings if f.get("endpoint", "unknown") != "unknown"]
+    data["findings"] = real
+    return data
+
+
+def _select_code(data: dict) -> dict:
+    """Sort classes by relevance_score descending, keep top 25."""
+    classes = data.get("classes", [])
+    classes.sort(key=lambda c: c.get("relevance_score", 0), reverse=True)
+    data["classes"] = classes[:25]
+    return data
+
+
+def _select_apis(data: dict) -> dict:
+    """Sort endpoints: resolved base_url first, then by header richness,
+    then by source class depth. Keep top 60."""
+    endpoints = data.get("endpoints", [])
+    endpoints.sort(key=lambda e: (
+        e.get("base_url") is not None,
+        len(e.get("headers", {})) > 0,
+        len(e.get("query_params", [])) + len(e.get("path_params", [])),
+        e.get("source_class", "").count("."),
+    ), reverse=True)
+    data["endpoints"] = endpoints[:60]
+    # base_urls is small, keep as-is
+    return data
+
+
+def _select_strings(data: list) -> list:
+    """Sort by entropy descending, keep top 50."""
+    data.sort(key=lambda f: f.get("entropy") or 0.0, reverse=True)
+    return data[:50]
+
+
+def _select_mobsf(data: dict) -> dict:
+    """Keep only the fields that add value over our own agents:
+    cert, apkid, niap, vulnerable_libraries, manifest_issues summary."""
+    return {
+        k: data[k] for k in (
+            "app_name", "package_name", "version", "min_sdk", "target_sdk",
+            "certificate", "apkid", "vulnerable_libraries",
+            "niap_findings", "manifest_issues",
+        ) if k in data
+    }
+
+
+_SELECTORS = {
+    "manifest_analyzer": ("Manifest Analysis",    _select_manifest),
+    "network_mapper":    ("Network Mapping",       _select_network),
+    "code_analyzer":     ("Code Analysis",         _select_code),
+    "api_extractor":     ("API Extraction",        _select_apis),
+    "string_extractor":  ("String/Secrets",        _select_strings),
+    "mobsf_analyzer":    ("MobSF Pre-scan",        _select_mobsf),
+}
+
+
 def _load_findings(job_dir: Path) -> str:
-    sections = []
-    for label, filename in FINDINGS_FILES:
-        filepath = job_dir / filename
+    sections: list[str] = []
+    for agent_name, (label, selector) in _SELECTORS.items():
+        filepath = job_dir / f"{agent_name}.json"
         if not filepath.exists():
             continue
         try:
-            content = filepath.read_text()
-            # Truncate very large findings
-            if len(content) > MAX_SECTION_CHARS:
-                content = content[:MAX_SECTION_CHARS] + "\n... (truncated)"
-            sections.append(f"## {label}\n{content}")
+            raw = filepath.read_text()
+            data = json.loads(raw)
         except Exception:
             continue
+
+        try:
+            selected = selector(data)
+            content = json.dumps(selected, indent=2)
+        except Exception:
+            content = raw
+
+        budget = _SECTION_BUDGETS.get(agent_name, 3000)
+        if len(content) > budget:
+            content = content[:budget] + "\n... (truncated)"
+
+        sections.append(f"## {label}\n{content}")
+
     return "\n\n".join(sections)
 
 
@@ -83,9 +159,6 @@ def create_report_synthesizer_server():
                 summary="No findings available. All analysis agents either failed or produced no output.",
                 risk_level="unknown",
             ).model_dump_json(indent=2)
-
-        if len(findings_text) > MAX_TOTAL_CHARS:
-            findings_text = findings_text[:MAX_TOTAL_CHARS] + "\n... (truncated)"
 
         prompt = (
             "Synthesize the following analysis findings into a security report:\n\n"

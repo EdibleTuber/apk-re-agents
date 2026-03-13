@@ -10,7 +10,7 @@ import anyio
 from apk_re.agents.base.base_agent import create_agent_server, is_library_path
 from apk_re.schemas import StringFinding
 
-MAX_FINDINGS = 200
+MAX_FINDINGS = 500
 MAX_FILE_SIZE = 1_000_000  # 1 MB
 
 # --- Regex patterns ---
@@ -291,9 +291,11 @@ def create_string_extractor_server():
                     continue
                 seen_values.add(finding.value)
                 all_findings.append(finding)
-            if len(all_findings) >= MAX_FINDINGS:
-                all_findings = all_findings[:MAX_FINDINGS]
-                break
+
+        # Sort by entropy descending — highest-signal findings survive the trim.
+        # Never break early: scan all files, trim at the end.
+        all_findings.sort(key=lambda f: f.entropy or 0.0, reverse=True)
+        all_findings = all_findings[:MAX_FINDINGS]
 
         return json.dumps([f.model_dump() for f in all_findings], indent=2)
 

@@ -16,7 +16,7 @@ OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 MODEL_NAME = os.environ.get("MODEL_NAME", "qwen2.5-coder:7b")
 
 MAX_FILE_SIZE = 500 * 1024  # 500KB
-MAX_NON_RETROFIT_FILES = 15  # Cap Phase 4 to avoid unbounded LLM call chains
+MAX_NON_RETROFIT_FILES = 25  # Cap Phase 4; sorted by keyword density so most relevant files first
 
 # --- Phase 1: Retrofit annotation regex ---
 RETROFIT_ANNOTATION = re.compile(

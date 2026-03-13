@@ -80,7 +80,7 @@ def _is_fp_url(url: str) -> bool:
         return True
     return False
 
-MAX_FILES = 20
+MAX_FILES = 40
 MAX_FILE_SIZE = 500 * 1024  # 500KB
 MAX_CHARS_PER_FILE = 8000
 
