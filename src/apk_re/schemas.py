@@ -64,6 +64,39 @@ class EndpointFinding(BaseModel):
     response_fields: dict[str, str] = Field(default_factory=dict)
 
 
+# --- MobSF pre-scan ---
+
+class MobSFCertificate(BaseModel):
+    subject: str | None = None
+    issuer: str | None = None
+    algorithm: str | None = None
+    valid_from: str | None = None
+    valid_to: str | None = None
+    findings: list[str] = Field(default_factory=list)
+
+
+class MobSFFindings(BaseModel):
+    app_name: str | None = None
+    package_name: str | None = None
+    version: str | None = None
+    min_sdk: str | None = None
+    target_sdk: str | None = None
+    certificate: MobSFCertificate | None = None
+    # apkid packer/obfuscation detections: filename -> [detection strings]
+    apkid: dict[str, list[str]] = Field(default_factory=dict)
+    # Known-vulnerable native libraries
+    vulnerable_libraries: list[str] = Field(default_factory=list)
+    # MobSF rule-based manifest violations
+    manifest_issues: list[dict[str, str]] = Field(default_factory=list)
+    # High/warning severity code analysis hits
+    # Format: [{"title": str, "severity": str, "file": str}]
+    code_issues: list[dict[str, str]] = Field(default_factory=list)
+    # NIAP compliance findings
+    niap_findings: list[dict[str, str]] = Field(default_factory=list)
+    # Network security config issues (cleartext, custom trust anchors, etc.)
+    network_security_issues: list[str] = Field(default_factory=list)
+
+
 # --- Code Analysis ---
 
 class CodeAnalysisSummary(BaseModel):
