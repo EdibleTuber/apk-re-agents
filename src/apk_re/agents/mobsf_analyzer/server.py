@@ -127,12 +127,15 @@ def _analyze_with_mobsf_impl(apk_path: str) -> str:
                 )
             resp.raise_for_status()
             upload = resp.json()
-            file_hash = upload["hash"]
+            file_hash = upload.get("hash")
+            file_name = upload.get("file_name")
+            if not file_hash or not file_name:
+                return json.dumps({"error": "MobSF upload response missing hash or file_name"})
             logger.info("MobSF: upload done, hash=%s — starting scan", file_hash)
 
             resp = client.post(
                 "/api/v1/scan",
-                data={"scan_type": "apk", "file_name": upload["file_name"], "hash": file_hash},
+                data={"scan_type": "apk", "file_name": file_name, "hash": file_hash},
                 headers=headers,
             )
             resp.raise_for_status()
