@@ -26,7 +26,7 @@ class Pipeline:
     AGENT_NAMES = [
         "unpacker", "manifest_analyzer", "string_extractor",
         "network_mapper", "code_analyzer", "api_extractor",
-        "report_synthesizer",
+        "report_synthesizer", "mobsf_analyzer",
     ]
 
     def __init__(self, shared_volume: str = "/data/apk_re/shared", agent_urls: dict[str, str] | None = None):
@@ -44,6 +44,7 @@ class Pipeline:
     def _default_stages() -> list[PipelineStage]:
         return [
             PipelineStage(name="unpack", agents=["unpacker"], parallel=False),
+            PipelineStage(name="mobsf_pre_scan", agents=["mobsf_analyzer"], parallel=False),
             PipelineStage(
                 name="parallel_analysis",
                 agents=["manifest_analyzer", "string_extractor", "network_mapper"],
@@ -66,6 +67,9 @@ class Pipeline:
             logger.info("Starting stage: %s", stage.name)
             self._write_status(job_dir, status)
             await self._run_stage(stage, job)
+            # Digest MobSF output into per-agent snippet files before LLM stages start
+            if stage.name == "mobsf_pre_scan":
+                self._digest_mobsf_findings(job)
             logger.info("Completed stage: %s", stage.name)
 
         status.state = "completed"
@@ -152,7 +156,13 @@ class Pipeline:
                 return {"raw_output": result_text}
         elif agent_name == "network_mapper":
             source_dir = "/work/decompiled/jadx"
-            result = await session.call_tool("map_network", arguments={"source_dir": source_dir})
+            result = await session.call_tool(
+                "map_network",
+                arguments={
+                    "source_dir": source_dir,
+                    "mobsf_context_path": self._snippet_path(job, "mobsf_network_context.txt"),
+                },
+            )
             result_text = result.content[0].text if result.content else str(result)
             try:
                 return json.loads(result_text)
@@ -182,7 +192,13 @@ class Pipeline:
                     return {"deep_analysis": deep_results}
                 return {"deep_analysis": []}
             elif "triage_classes" in tool_names:
-                result = await session.call_tool("triage_classes", arguments={"source_dir": source_dir})
+                result = await session.call_tool(
+                    "triage_classes",
+                    arguments={
+                        "source_dir": source_dir,
+                        "mobsf_context_path": self._snippet_path(job, "mobsf_code_context.txt"),
+                    },
+                )
                 result_text = result.content[0].text if result.content else str(result)
                 try:
                     return json.loads(result_text)
@@ -191,7 +207,13 @@ class Pipeline:
             return {"status": "completed", "agent": agent_name}
         elif agent_name == "api_extractor":
             source_dir = "/work/decompiled/jadx"
-            result = await session.call_tool("extract_apis", arguments={"source_dir": source_dir})
+            result = await session.call_tool(
+                "extract_apis",
+                arguments={
+                    "source_dir": source_dir,
+                    "mobsf_flagged_path": self._snippet_path(job, "mobsf_api_flagged.txt"),
+                },
+            )
             result_text = result.content[0].text if result.content else str(result)
             try:
                 return json.loads(result_text)
@@ -204,9 +226,80 @@ class Pipeline:
                 return json.loads(result_text)
             except json.JSONDecodeError:
                 return {"raw_output": result_text}
+        elif agent_name == "mobsf_analyzer":
+            agent_apk_path = job.apk_path.replace(str(self.shared_volume), "/work")
+            result = await session.call_tool(
+                "analyze_with_mobsf", arguments={"apk_path": agent_apk_path}
+            )
+            result_text = result.content[0].text if result.content else str(result)
+            try:
+                return json.loads(result_text)
+            except json.JSONDecodeError:
+                return {"raw_output": result_text}
         elif "read_file" in tool_names:
             return {"status": "completed", "agent": agent_name}
         return {}
+
+    def _digest_mobsf_findings(self, job: JobRequest) -> None:
+        """Read mobsf_analyzer.json and write per-agent context snippet files.
+
+        Writes to the job findings directory:
+          mobsf_code_context.txt    — flagged-class list for code_analyzer
+          mobsf_network_context.txt — net-sec-config issues for network_mapper
+          mobsf_api_flagged.txt     — filename stems for api_extractor Phase 4 scoring
+        """
+        findings_dir = self.shared_volume / "findings" / job.job_id
+        mobsf_file = findings_dir / "mobsf_analyzer.json"
+        if not mobsf_file.exists():
+            logger.warning("MobSF findings not found, skipping digest")
+            return
+
+        try:
+            data = json.loads(mobsf_file.read_text())
+        except Exception:
+            logger.warning("Failed to parse MobSF findings, skipping digest")
+            return
+
+        code_issues = data.get("code_issues", [])
+
+        # -- code_analyzer: flagged class list --
+        if code_issues:
+            lines = ["MobSF flagged these files for dangerous API patterns:"]
+            for issue in code_issues:
+                fp = issue.get("file", "")
+                if fp:
+                    lines.append(f"  [{issue.get('severity', '')}] {fp} — {issue.get('title', '')}")
+            snippet = "\n".join(lines)[:1500]
+            (findings_dir / "mobsf_code_context.txt").write_text(snippet)
+            logger.info("MobSF digest: wrote code context (%d chars)", len(snippet))
+
+        # -- network_mapper: network security issues --
+        net_issues = data.get("network_security_issues", [])
+        if net_issues:
+            lines = ["MobSF network security config findings:"]
+            lines.extend(f"  - {issue}" for issue in net_issues[:10])
+            snippet = "\n".join(lines)[:1000]
+            (findings_dir / "mobsf_network_context.txt").write_text(snippet)
+            logger.info("MobSF digest: wrote network context (%d chars)", len(snippet))
+
+        # -- api_extractor Phase 4: network-flagged filename stems --
+        network_keywords = {"http", "url", "network", "socket", "ssl", "tls", "request", "retrofit"}
+        flagged_stems: set[str] = set()
+        for issue in code_issues:
+            if any(kw in issue.get("title", "").lower() for kw in network_keywords):
+                fp = issue.get("file", "")
+                if fp:
+                    flagged_stems.add(Path(fp).stem.lower())
+        if flagged_stems:
+            (findings_dir / "mobsf_api_flagged.txt").write_text("\n".join(sorted(flagged_stems)))
+            logger.info("MobSF digest: flagged %d stems for api_extractor", len(flagged_stems))
+
+    def _snippet_path(self, job: JobRequest, filename: str) -> str:
+        """Return agent-mount path to a snippet file, or empty string if it doesn't exist."""
+        host_path = self.shared_volume / "findings" / job.job_id / filename
+        if not host_path.exists():
+            return ""
+        return str(host_path).replace(str(self.shared_volume), "/work")
 
     def _write_status(self, job_dir: Path, status: JobStatus) -> None:
         status_file = job_dir / "status.json"
