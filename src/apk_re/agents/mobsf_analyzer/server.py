@@ -20,10 +20,13 @@ def _parse_certificate(report: dict) -> MobSFCertificate | None:
     cert_data = report.get("certificate_analysis", {})
     if not cert_data:
         return None
-    findings = [
-        f"{sev}: {desc}"
-        for sev, desc in cert_data.get("certificate_findings", [])
-    ]
+    findings = []
+    for entry in cert_data.get("certificate_findings", []):
+        if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+            # MobSF returns [severity, title, description] or [severity, description]
+            findings.append(": ".join(str(p) for p in entry))
+        elif isinstance(entry, str):
+            findings.append(entry)
     subject = issuer = algorithm = valid_from = valid_to = None
     for item in cert_data.get("certificate_info", []):
         if isinstance(item, dict):
