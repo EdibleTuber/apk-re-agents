@@ -352,7 +352,11 @@ def _build_source_class(file_path: Path, source_dir: Path) -> str:
 
 # --- Fallback: non-Retrofit file discovery ---
 
-def _find_non_retrofit_files(source_dir: Path, retrofit_files: set[Path]) -> list[Path]:
+def _find_non_retrofit_files(
+    source_dir: Path,
+    retrofit_files: set[Path],
+    mobsf_flagged: set[str] | None = None,
+) -> list[Path]:
     """Find files using OkHttp/Volley/HttpURLConnection that aren't Retrofit interfaces.
 
     Returns up to MAX_NON_RETROFIT_FILES files, prioritised by keyword match density
@@ -374,7 +378,10 @@ def _find_non_retrofit_files(source_dir: Path, retrofit_files: set[Path]) -> lis
 
         matches = NON_RETROFIT_KEYWORDS.findall(content)
         if matches:
-            results.append((len(matches), java_file))
+            score = len(matches)
+            if mobsf_flagged and java_file.stem.lower() in mobsf_flagged:
+                score += 10  # bonus for MobSF-flagged files
+            results.append((score, java_file))
 
     results.sort(key=lambda x: x[0], reverse=True)
     return [path for _, path in results[:MAX_NON_RETROFIT_FILES]]
@@ -423,7 +430,7 @@ def _process_non_retrofit_file(
         return []
 
 
-def _extract_apis_impl(source_dir: str) -> str:
+def _extract_apis_impl(source_dir: str, mobsf_flagged_path: str = "") -> str:
     path = Path(source_dir)
     if not path.is_absolute():
         path = Path("/work") / path
@@ -443,6 +450,19 @@ def _extract_apis_impl(source_dir: str) -> str:
     # Phase 2b: Map interface names to base URLs
     interface_base_map = _build_interface_base_url_map(path, retrofit_files, base_urls)
     logger.info("Phase 2b: Resolved base URLs for %d interfaces", len(interface_base_map))
+
+    # Load MobSF-flagged file stems for Phase 4 bonus scoring
+    mobsf_flagged: set[str] | None = None
+    if mobsf_flagged_path:
+        fp = Path(mobsf_flagged_path)
+        if not fp.is_absolute():
+            fp = Path("/work") / fp
+        if fp.exists():
+            try:
+                mobsf_flagged = {line.strip().lower() for line in fp.read_text().splitlines() if line.strip()}
+                logger.info("Phase 4: MobSF flagged %d file stems for bonus scoring", len(mobsf_flagged))
+            except OSError:
+                pass
 
     # Phase 3: Per-file LLM enrichment for Retrofit files
     for i, (file_path, methods) in enumerate(retrofit_files.items(), 1):
@@ -485,7 +505,7 @@ def _extract_apis_impl(source_dir: str) -> str:
     logger.info("Phase 3: Enrichment complete for %d Retrofit files", len(retrofit_files))
 
     # Phase 4: Fallback for non-Retrofit APIs
-    non_retrofit_files = _find_non_retrofit_files(path, set(retrofit_files.keys()))
+    non_retrofit_files = _find_non_retrofit_files(path, set(retrofit_files.keys()), mobsf_flagged)
     logger.info("Phase 4: Found %d non-Retrofit HTTP files", len(non_retrofit_files))
     for i, file_path in enumerate(non_retrofit_files, 1):
         logger.info("Phase 4: Processing file %d/%d: %s", i, len(non_retrofit_files), file_path.name)
@@ -522,7 +542,7 @@ def create_api_extractor_server():
     server = create_agent_server("api_extractor")
 
     @server.tool()
-    async def extract_apis(source_dir: str) -> str:
+    async def extract_apis(source_dir: str, mobsf_flagged_path: str = "") -> str:
         """Analyze decompiled Java source files for API endpoint definitions.
 
         Uses a hybrid regex+LLM approach:
@@ -533,8 +553,11 @@ def create_api_extractor_server():
 
         Args:
             source_dir: Path to the decompiled source directory (e.g., /work/decompiled/jadx).
+            mobsf_flagged_path: Optional path to MobSF network-flagged file stems.
         """
-        return await anyio.to_thread.run_sync(_extract_apis_impl, source_dir)
+        return await anyio.to_thread.run_sync(
+            lambda: _extract_apis_impl(source_dir, mobsf_flagged_path)
+        )
 
     return server
 
