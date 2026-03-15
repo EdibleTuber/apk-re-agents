@@ -154,12 +154,25 @@ def _extract_url_literals(files: list[Path], source_dir: Path) -> list[NetworkFi
     return findings
 
 
-def _map_network_impl(source_dir: str) -> str:
+def _map_network_impl(source_dir: str, mobsf_context_path: str = "") -> str:
     path = Path(source_dir)
     if not path.is_absolute():
         path = Path("/work") / path
     if not path.exists():
         return f"Error: directory not found: {path}"
+
+    # Load MobSF network security context to prepend to each file's LLM prompt
+    net_context = ""
+    if mobsf_context_path:
+        ctx_path = Path(mobsf_context_path)
+        if not ctx_path.is_absolute():
+            ctx_path = Path("/work") / ctx_path
+        if ctx_path.exists():
+            try:
+                net_context = ctx_path.read_text().strip()
+                logger.info("Network mapper: loaded MobSF context (%d chars)", len(net_context))
+            except OSError:
+                pass
 
     relevant_files = _find_relevant_files(path)
     if not relevant_files:
@@ -184,7 +197,9 @@ def _map_network_impl(source_dir: str) -> str:
         if source_class.startswith("sources."):
             source_class = source_class[len("sources."):]
 
+        context_prefix = (net_context + "\n\n") if net_context else ""
         prompt = (
+            f"{context_prefix}"
             f"Analyze this single Java file for network behavior:\n\n"
             f"--- {rel} ---\n{content}"
         )
@@ -222,13 +237,16 @@ def create_network_mapper_server():
     server = create_agent_server("network_mapper")
 
     @server.tool()
-    async def map_network(source_dir: str) -> str:
+    async def map_network(source_dir: str, mobsf_context_path: str = "") -> str:
         """Analyze decompiled Java source files for network-related behavior.
 
         Args:
             source_dir: Path to the decompiled source directory (e.g., /work/decompiled/jadx).
+            mobsf_context_path: Optional path to MobSF network security context snippet file.
         """
-        return await anyio.to_thread.run_sync(_map_network_impl, source_dir)
+        return await anyio.to_thread.run_sync(
+            lambda: _map_network_impl(source_dir, mobsf_context_path)
+        )
 
     return server
 
