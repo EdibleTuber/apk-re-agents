@@ -460,7 +460,7 @@ def _extract_apis_impl(source_dir: str, mobsf_flagged_path: str = "") -> str:
         if fp.exists():
             try:
                 mobsf_flagged = {line.strip().lower() for line in fp.read_text().splitlines() if line.strip()}
-                logger.info("Phase 4: MobSF flagged %d file stems for bonus scoring", len(mobsf_flagged))
+                logger.info("MobSF: flagged %d file stems for Phase 4 bonus scoring", len(mobsf_flagged))
             except OSError:
                 pass
 

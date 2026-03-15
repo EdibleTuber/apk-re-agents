@@ -67,7 +67,9 @@ class Pipeline:
             logger.info("Starting stage: %s", stage.name)
             self._write_status(job_dir, status)
             await self._run_stage(stage, job)
-            # Digest MobSF output into per-agent snippet files before LLM stages start
+            # Digest MobSF output into per-agent snippet files before LLM stages start.
+            # MobSF failure is non-fatal: _call_agent writes an error JSON and continues,
+            # so downstream agents simply fall back to empty context strings.
             if stage.name == "mobsf_pre_scan":
                 self._digest_mobsf_findings(job)
             logger.info("Completed stage: %s", stage.name)
@@ -258,6 +260,10 @@ class Pipeline:
             data = json.loads(mobsf_file.read_text())
         except Exception:
             logger.warning("Failed to parse MobSF findings, skipping digest")
+            return
+
+        if "error" in data:
+            logger.warning("MobSF scan reported an error: %s — running without MobSF context", data["error"])
             return
 
         code_issues = data.get("code_issues", [])

@@ -156,20 +156,24 @@ def _analyze_with_mobsf_impl(apk_path: str) -> str:
         logger.exception("MobSF unexpected error")
         return json.dumps({"error": f"MobSF error: {exc}"})
 
-    findings = MobSFFindings(
-        app_name=report.get("app_name"),
-        package_name=report.get("package_name"),
-        version=report.get("version_name"),
-        min_sdk=str(report.get("min_sdk", "")),
-        target_sdk=str(report.get("target_sdk", "")),
-        certificate=_parse_certificate(report),
-        apkid=_parse_apkid(report),
-        vulnerable_libraries=_parse_vulnerable_libs(report),
-        manifest_issues=_parse_manifest_issues(report),
-        code_issues=_parse_code_issues(report),
-        niap_findings=_parse_niap(report),
-        network_security_issues=_parse_network_security(report),
-    )
+    try:
+        findings = MobSFFindings(
+            app_name=report.get("app_name"),
+            package_name=report.get("package_name"),
+            version=report.get("version_name"),
+            min_sdk=str(report.get("min_sdk", "")),
+            target_sdk=str(report.get("target_sdk", "")),
+            certificate=_parse_certificate(report),
+            apkid=_parse_apkid(report),
+            vulnerable_libraries=_parse_vulnerable_libs(report),
+            manifest_issues=_parse_manifest_issues(report),
+            code_issues=_parse_code_issues(report),
+            niap_findings=_parse_niap(report),
+            network_security_issues=_parse_network_security(report),
+        )
+    except Exception as exc:
+        logger.exception("MobSF report parsing error")
+        return json.dumps({"error": f"MobSF report parsing error: {exc}"})
     return findings.model_dump_json(indent=2)
 
 
