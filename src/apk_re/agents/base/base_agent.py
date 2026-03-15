@@ -32,7 +32,7 @@ def call_ollama(
     ollama_host: str = "http://localhost:11434",
     model: str = "qwen2.5-coder:7b",
     system_prompt: str | None = None,
-    timeout: float = 120.0,
+    timeout: float = 600.0,
 ) -> T:
     """Call Ollama and return a validated Pydantic model.
 
@@ -42,7 +42,7 @@ def call_ollama(
         ollama_host: Ollama server URL.
         model: Model name to use.
         system_prompt: Optional system prompt.
-        timeout: HTTP timeout in seconds for the Ollama request (default 120s).
+        timeout: HTTP timeout in seconds for the Ollama request (default 600s).
     """
     import ollama
 
