@@ -104,7 +104,7 @@ services:
       - MODEL_NAME=${REASONING_MODEL:-glm-4.7-flash}
 
   mobsf:
-    image: ghcr.io/mobsf/mobile-security-framework-mobsf:latest
+    image: opensecurity/mobile-security-framework-mobsf:latest
     ports:
       - "8008:8000"
     volumes:
