@@ -87,12 +87,27 @@ def _find_relevant_files(source_dir: Path) -> list[Path]:
     return [path for _, path in relevant[:MAX_FILES]]
 
 
-def _triage_classes_impl(source_dir: str) -> str:
+def _triage_classes_impl(source_dir: str, mobsf_context_path: str = "") -> str:
     path = Path(source_dir)
     if not path.is_absolute():
         path = Path("/work") / path
     if not path.exists():
         return f"Error: directory not found: {path}"
+
+    # Prepend MobSF flagged-class context to triage system prompt if available
+    effective_system_prompt = TRIAGE_PROMPT
+    if mobsf_context_path:
+        ctx_path = Path(mobsf_context_path)
+        if not ctx_path.is_absolute():
+            ctx_path = Path("/work") / ctx_path
+        if ctx_path.exists():
+            try:
+                mobsf_context = ctx_path.read_text().strip()
+                if mobsf_context:
+                    effective_system_prompt = mobsf_context + "\n\n" + TRIAGE_PROMPT
+                    logger.info("Triage: injected MobSF context (%d chars)", len(mobsf_context))
+            except OSError:
+                pass
 
     relevant_files = _find_relevant_files(path)
     if not relevant_files:
@@ -129,7 +144,7 @@ def _triage_classes_impl(source_dir: str) -> str:
                 output_schema=TriageResult,
                 ollama_host=OLLAMA_HOST,
                 model=MODEL_NAME,
-                system_prompt=TRIAGE_PROMPT,
+                system_prompt=effective_system_prompt,
             )
             all_classes.extend(result.classes)
         except Exception:
@@ -206,7 +221,7 @@ def create_code_analyzer_server():
     server = create_agent_server("code_analyzer")
 
     @server.tool()
-    async def triage_classes(source_dir: str) -> str:
+    async def triage_classes(source_dir: str, mobsf_context_path: str = "") -> str:
         """Triage decompiled Java classes by security relevance.
 
         Pre-filters files using regex for security-relevant keywords, then
@@ -214,8 +229,11 @@ def create_code_analyzer_server():
 
         Args:
             source_dir: Path to the decompiled source directory (e.g., /work/decompiled/jadx).
+            mobsf_context_path: Optional path to MobSF code context snippet file.
         """
-        return await anyio.to_thread.run_sync(_triage_classes_impl, source_dir)
+        return await anyio.to_thread.run_sync(
+            lambda: _triage_classes_impl(source_dir, mobsf_context_path)
+        )
 
     @server.tool()
     async def analyze_class(file_path: str) -> str:
